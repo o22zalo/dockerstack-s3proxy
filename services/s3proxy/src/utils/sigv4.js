@@ -27,7 +27,33 @@ const STRIP_HEADERS = new Set([
   'connection',
   'transfer-encoding',
   'expect',
+  // Never forward client-side compression preferences; upstream may return
+  // compressed error payloads that become unreadable when proxied.
+  'accept-encoding',
+  // Hop-by-hop / edge forwarding headers are frequently rewritten by reverse
+  // proxies (Cloudflare/Caddy) and can break SigV4 when included in signing.
+  'forwarded',
+  'via',
+  'cdn-loop',
+  'x-real-ip',
 ])
+
+const FORWARDED_HEADER_ALLOWLIST = new Set([
+  // Internal trace header injected by this service.
+  'x-forwarded-request-id',
+])
+
+function shouldStripHeader(headerName) {
+  if (STRIP_HEADERS.has(headerName)) return true
+  if (headerName.startsWith('cf-')) return true
+
+  if (headerName.startsWith('x-forwarded-')
+      && !FORWARDED_HEADER_ALLOWLIST.has(headerName)) {
+    return true
+  }
+
+  return false
+}
 
 function joinEndpointPath(basePath = '/', requestPath = '/') {
   const normalizedBase = basePath && basePath !== '/'
@@ -107,7 +133,7 @@ export async function resignRequest({ account, method, path, query = {}, headers
   for (const [k, v] of Object.entries(headers)) {
     const lower = k.toLowerCase()
     if (lower.startsWith('x-amz-checksum-')) continue
-    if (!STRIP_HEADERS.has(lower)) {
+    if (!shouldStripHeader(lower)) {
       cleanHeaders[lower] = v
     }
   }

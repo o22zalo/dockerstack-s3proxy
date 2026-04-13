@@ -165,6 +165,76 @@ async function testResignRequestVirtualHostedWithPort() {
   }
 }
 
+async function testResignRequestStripsProxyForwardedHeaders() {
+  try {
+    const { resignRequest } = await import('../src/utils/sigv4.js')
+
+    const account = {
+      access_key_id: 'AKIATESTKEY123',
+      secret_key: 'testSecretKey456abcdef',
+      endpoint: 'https://testproject.supabase.co/storage/v1/s3',
+      region: 'ap-southeast-1',
+      bucket: 'test-bucket',
+    }
+
+    const { headers } = await resignRequest({
+      account,
+      method: 'PUT',
+      path: '/test-bucket/object.txt',
+      headers: {
+        'content-type': 'text/plain',
+        'content-length': '4',
+        'accept-encoding': 'gzip, deflate',
+        'x-forwarded-for': '203.0.113.10',
+        'x-forwarded-host': 'example.com',
+        'x-forwarded-proto': 'https',
+        'x-forwarded-request-id': 'trace-123',
+        'cf-ray': 'abc',
+        'cf-connecting-ip': '203.0.113.10',
+      },
+    })
+
+    if (headers['accept-encoding']) {
+      throw new Error('accept-encoding should be stripped before signing')
+    }
+    if (headers['x-forwarded-for']) {
+      throw new Error('x-forwarded-for should be stripped before signing')
+    }
+    if (headers['x-forwarded-host']) {
+      throw new Error('x-forwarded-host should be stripped before signing')
+    }
+    if (headers['cf-ray']) {
+      throw new Error('cf-ray should be stripped before signing')
+    }
+    if (headers['cf-connecting-ip']) {
+      throw new Error('cf-connecting-ip should be stripped before signing')
+    }
+    if (headers['x-forwarded-request-id'] !== 'trace-123') {
+      throw new Error('x-forwarded-request-id should be preserved')
+    }
+
+    const authHeader = headers.authorization || ''
+    const signedHeadersMatch = authHeader.match(/SignedHeaders=([^,]+)/)
+    if (!signedHeadersMatch) {
+      throw new Error(`Unable to parse SignedHeaders from Authorization: ${authHeader}`)
+    }
+
+    const signedHeaders = signedHeadersMatch[1].split(';')
+    for (const forbidden of ['accept-encoding', 'x-forwarded-for', 'x-forwarded-host', 'cf-ray']) {
+      if (signedHeaders.includes(forbidden)) {
+        throw new Error(`${forbidden} unexpectedly present in SignedHeaders: ${authHeader}`)
+      }
+    }
+    if (!signedHeaders.includes('x-forwarded-request-id')) {
+      throw new Error(`SignedHeaders missing x-forwarded-request-id: ${authHeader}`)
+    }
+
+    ok('resignRequest strip proxy/CDN headers de tranh SignatureDoesNotMatch tu upstream')
+  } catch (err) {
+    fail('resignRequest strip proxy/CDN headers', err)
+  }
+}
+
 // ─── Test: withRetry success after 2 fails ───────────────────────────────────
 
 async function testWithRetryPass() {
@@ -311,6 +381,7 @@ async function main() {
   await testResignRequest()
   await testResignRequestVirtualHostedStyle()
   await testResignRequestVirtualHostedWithPort()
+  await testResignRequestStripsProxyForwardedHeaders()
   await testWithRetryPass()
   await testWithRetryNo4xx()
   await testBuildErrorXml()

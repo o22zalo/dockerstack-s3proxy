@@ -1,0 +1,392 @@
+# VS Code REST Client requests for S3Proxy
+# Extension: REST Client (humao.rest-client)
+#
+# All core connection values are loaded from .env using {{$dotenv ...}}.
+# Run requests from top to bottom for a full functional sweep.
+
+@project_name = {{$dotenv PROJECT_NAME}}
+@domain = {{$dotenv PROJECT_NAME}}
+@app_host_port = {{$dotenv APP_HOST_PORT}}
+@health_path = {{$dotenv HEALTH_PATH}}
+@s3proxy_api_key = {{$dotenv S3PROXY_API_KEY}}
+
+@domain_url = https://{{project_name}}.dpdns.org
+@run_id = {{$timestamp}}
+@bucket = s3proxy-http-{{run_id}}
+@obj_main = objects/main-{{run_id}}.txt
+@obj_secondary = objects/secondary-{{run_id}}.txt
+@obj_special = objects/a&b-{{run_id}}.txt
+@obj_nested = photos/2026/item-{{run_id}}.txt
+@multipart_key = multipart/multi-{{run_id}}.bin
+
+# For multipart steps, copy UploadId from "Initiate Multipart Upload" response.
+@multipart_upload_id = REPLACE_WITH_UPLOAD_ID
+
+# ========================
+# Health / Metrics
+# ========================
+
+###
+GET {{domain_url}}{{health_path}}
+Accept: application/json
+
+###
+GET {{domain_url}}/metrics
+Accept: text/plain
+
+# ========================
+# Auth coverage (supported formats)
+# ========================
+
+###
+# x-api-key header
+GET {{domain_url}}/{{bucket}}?list-type=2
+Accept: application/xml
+x-api-key: {{s3proxy_api_key}}
+
+###
+# Authorization: Bearer <key>
+GET {{domain_url}}/{{bucket}}?list-type=2
+Accept: application/xml
+Authorization: Bearer {{s3proxy_api_key}}
+
+###
+# Authorization: AWS4-HMAC-SHA256 Credential=<key>/...
+GET {{domain_url}}/{{bucket}}?list-type=2
+Accept: application/xml
+Authorization: AWS4-HMAC-SHA256 Credential={{s3proxy_api_key}}/20260413/ap-southeast-1/s3/aws4_request, SignedHeaders=host;x-amz-date, Signature=dummy
+
+###
+# Expected 403 AccessDenied
+GET {{domain_url}}/{{bucket}}?list-type=2
+Accept: application/xml
+x-api-key: wrong-key
+
+# ========================
+# Admin accounts APIs
+# ========================
+
+###
+GET {{domain_url}}/admin/accounts
+Accept: application/json
+x-api-key: {{s3proxy_api_key}}
+
+###
+# Import single account document
+POST {{domain_url}}/admin/accounts
+Content-Type: application/json
+x-api-key: {{s3proxy_api_key}}
+
+{
+  "accountId": "supabaseS3-o861-cloudflare",
+  "accessKeyId": "b8f84817eb848785a57f23616cd40392",
+  "secretAccessKey": "e4ae8fcfeabb1e7bbf976aa50fdd5d90a7efefe2bb3a8bda61fafaa21481291e",
+  "endpoint": "https://pbzbwqmiqdhnozmlzssk.storage.supabase.co/storage/v1/s3",
+  "region": "ap-southeast-2",
+  "bucket": "o861.cloudflare",
+  "addressingStyle": "path",
+  "payloadSigningMode": "unsigned"
+}
+###
+# Import single account document
+POST {{domain_url}}/admin/accounts
+Content-Type: application/json
+x-api-key: {{s3proxy_api_key}}
+
+{
+  "accountId": "http-single-{{run_id}}",
+  "accessKeyId": "ak-single-{{run_id}}",
+  "secretAccessKey": "sk-single-{{run_id}}",
+  "endpoint": "https://single-{{run_id}}.example.com/storage/v1/s3",
+  "region": "ap-southeast-1",
+  "bucket": "single-bucket-{{run_id}}",
+  "addressingStyle": "path",
+  "payloadSigningMode": "unsigned"
+}
+
+###
+# Import map under "accounts"
+POST {{domain_url}}/admin/accounts/import
+Content-Type: application/json
+x-api-key: {{s3proxy_api_key}}
+
+{
+  "accounts": {
+    "http-map-a-{{run_id}}": {
+      "accessKeyId": "ak-map-a-{{run_id}}",
+      "secretAccessKey": "sk-map-a-{{run_id}}",
+      "endpoint": "https://map-a-{{run_id}}.example.com/storage/v1/s3",
+      "region": "ap-southeast-1",
+      "bucket": "map-a-bucket-{{run_id}}",
+      "quotaBytes": 123456789,
+      "addressingStyle": "virtual",
+      "payloadSigningMode": "signed"
+    },
+    "http-map-b-{{run_id}}": {
+      "accessKeyId": "ak-map-b-{{run_id}}",
+      "secretAccessKey": "sk-map-b-{{run_id}}",
+      "endpoint": "https://map-b-{{run_id}}.example.com/storage/v1/s3",
+      "region": "ap-southeast-1",
+      "bucket": "map-b-bucket-{{run_id}}",
+      "active": false
+    }
+  }
+}
+
+###
+# Invalid payload example, expected 400 with validation errors
+POST {{domain_url}}/admin/accounts
+Content-Type: application/json
+x-api-key: {{s3proxy_api_key}}
+
+{
+  "accounts": [
+    {
+      "accountId": "invalid-{{run_id}}",
+      "accessKeyId": "ak-invalid-{{run_id}}",
+      "secretAccessKey": "sk-invalid-{{run_id}}"
+    }
+  ]
+}
+
+# ========================
+# Bucket APIs
+# ========================
+
+###
+# Create logical bucket
+PUT {{domain_url}}/{{bucket}}
+Accept: application/xml
+x-api-key: {{s3proxy_api_key}}
+
+###
+GET {{domain_url}}/{{bucket}}?location
+Accept: application/xml
+x-api-key: {{s3proxy_api_key}}
+
+###
+GET {{domain_url}}/{{bucket}}?versioning
+Accept: application/xml
+x-api-key: {{s3proxy_api_key}}
+
+# ========================
+# Object APIs (single-part)
+# ========================
+
+###
+PUT {{domain_url}}/{{bucket}}/{{obj_main}}
+Content-Type: text/plain
+x-api-key: {{s3proxy_api_key}}
+
+hello-main-{{run_id}}
+
+###
+PUT {{domain_url}}/{{bucket}}/{{obj_secondary}}
+Content-Type: text/plain
+x-api-key: {{s3proxy_api_key}}
+
+hello-secondary-{{run_id}}
+
+###
+PUT {{domain_url}}/{{bucket}}/{{obj_special}}
+Content-Type: text/plain
+x-api-key: {{s3proxy_api_key}}
+
+hello-special-{{run_id}}
+
+###
+PUT {{domain_url}}/{{bucket}}/{{obj_nested}}
+Content-Type: text/plain
+x-api-key: {{s3proxy_api_key}}
+
+hello-nested-{{run_id}}
+
+###
+GET {{domain_url}}/{{bucket}}/{{obj_main}}
+Accept: */*
+x-api-key: {{s3proxy_api_key}}
+
+###
+HEAD {{domain_url}}/{{bucket}}/{{obj_main}}
+x-api-key: {{s3proxy_api_key}}
+
+# ========================
+# ListObjectsV2 coverage
+# ========================
+
+###
+GET {{domain_url}}/{{bucket}}?list-type=2
+Accept: application/xml
+x-api-key: {{s3proxy_api_key}}
+
+###
+# URL-encoded keys
+GET {{domain_url}}/{{bucket}}?list-type=2&prefix=objects/&encoding-type=url
+Accept: application/xml
+x-api-key: {{s3proxy_api_key}}
+
+###
+# Prefix + delimiter => CommonPrefixes
+GET {{domain_url}}/{{bucket}}?list-type=2&prefix=photos/&delimiter=/
+Accept: application/xml
+x-api-key: {{s3proxy_api_key}}
+
+###
+# Pagination response with continuation token
+GET {{domain_url}}/{{bucket}}?list-type=2&max-keys=1
+Accept: application/xml
+x-api-key: {{s3proxy_api_key}}
+
+###
+# start-after support
+GET {{domain_url}}/{{bucket}}?list-type=2&start-after={{obj_main}}
+Accept: application/xml
+x-api-key: {{s3proxy_api_key}}
+
+###
+# Invalid encoding-type => expected 400 InvalidArgument
+GET {{domain_url}}/{{bucket}}?list-type=2&encoding-type=base64
+Accept: application/xml
+x-api-key: {{s3proxy_api_key}}
+
+###
+# Invalid continuation token => expected 400 InvalidArgument
+GET {{domain_url}}/{{bucket}}?list-type=2&continuation-token=not-a-valid-token
+Accept: application/xml
+x-api-key: {{s3proxy_api_key}}
+
+# ========================
+# Unsupported CopyObject
+# ========================
+
+###
+# Expected 501 NotImplemented
+PUT {{domain_url}}/{{bucket}}/copy-target-{{run_id}}.txt
+Content-Type: text/plain
+x-api-key: {{s3proxy_api_key}}
+x-amz-copy-source: /{{bucket}}/{{obj_main}}
+
+# ========================
+# Multipart upload coverage
+# ========================
+
+###
+# Initiate multipart upload (copy UploadId from XML response)
+POST {{domain_url}}/{{bucket}}/{{multipart_key}}?uploads
+Accept: application/xml
+x-api-key: {{s3proxy_api_key}}
+
+###
+# Upload part
+PUT {{domain_url}}/{{bucket}}/{{multipart_key}}?uploadId={{multipart_upload_id}}&partNumber=1
+Content-Type: application/octet-stream
+x-api-key: {{s3proxy_api_key}}
+
+part-one-{{run_id}}
+
+###
+# Complete multipart upload
+POST {{domain_url}}/{{bucket}}/{{multipart_key}}?uploadId={{multipart_upload_id}}
+Content-Type: application/xml
+Accept: application/xml
+x-api-key: {{s3proxy_api_key}}
+
+<CompleteMultipartUpload>
+  <Part>
+    <PartNumber>1</PartNumber>
+    <ETag>part-1</ETag>
+  </Part>
+</CompleteMultipartUpload>
+
+###
+# Read merged multipart object
+GET {{domain_url}}/{{bucket}}/{{multipart_key}}
+Accept: */*
+x-api-key: {{s3proxy_api_key}}
+
+###
+# Abort unknown multipart upload => expected 204
+DELETE {{domain_url}}/{{bucket}}/{{multipart_key}}?uploadId=missing-upload-id
+x-api-key: {{s3proxy_api_key}}
+
+###
+# Upload part for unknown upload => expected 404 NoSuchUpload
+PUT {{domain_url}}/{{bucket}}/{{multipart_key}}?uploadId=missing-upload-id&partNumber=1
+Content-Type: application/octet-stream
+x-api-key: {{s3proxy_api_key}}
+
+missing-upload
+
+###
+# Complete unknown upload => expected 404 NoSuchUpload
+POST {{domain_url}}/{{bucket}}/{{multipart_key}}?uploadId=missing-upload-id
+Content-Type: application/xml
+Accept: application/xml
+x-api-key: {{s3proxy_api_key}}
+
+<CompleteMultipartUpload />
+
+###
+# Unknown multipart operation => expected 400 InvalidRequest
+POST {{domain_url}}/{{bucket}}/{{multipart_key}}
+Content-Type: application/xml
+Accept: application/xml
+x-api-key: {{s3proxy_api_key}}
+
+<UnknownOperation />
+
+# ========================
+# Delete flows and tombstone behavior
+# ========================
+
+###
+DELETE {{domain_url}}/{{bucket}}/{{obj_main}}
+x-api-key: {{s3proxy_api_key}}
+
+###
+# After delete, expected 404 NoSuchKey
+GET {{domain_url}}/{{bucket}}/{{obj_main}}
+Accept: application/xml
+x-api-key: {{s3proxy_api_key}}
+
+###
+# Idempotent delete, expected 204
+DELETE {{domain_url}}/{{bucket}}/{{obj_main}}
+x-api-key: {{s3proxy_api_key}}
+
+###
+# Bucket not empty yet (other objects still exist), expected 409 BucketNotEmpty
+DELETE {{domain_url}}/{{bucket}}
+Accept: application/xml
+x-api-key: {{s3proxy_api_key}}
+
+###
+DELETE {{domain_url}}/{{bucket}}/{{obj_secondary}}
+x-api-key: {{s3proxy_api_key}}
+
+###
+DELETE {{domain_url}}/{{bucket}}/{{obj_special}}
+x-api-key: {{s3proxy_api_key}}
+
+###
+DELETE {{domain_url}}/{{bucket}}/{{obj_nested}}
+x-api-key: {{s3proxy_api_key}}
+
+###
+DELETE {{domain_url}}/{{bucket}}/{{multipart_key}}
+x-api-key: {{s3proxy_api_key}}
+
+###
+# Bucket empty now, expected 204
+DELETE {{domain_url}}/{{bucket}}
+x-api-key: {{s3proxy_api_key}}
+
+# ========================
+# CORS preflight
+# ========================
+
+###
+OPTIONS {{domain_url}}/{{bucket}}/cors-check.txt
+Origin: http://localhost
+Access-Control-Request-Method: PUT
+Access-Control-Request-Headers: x-api-key,content-type
