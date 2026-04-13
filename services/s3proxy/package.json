@@ -21,7 +21,6 @@
     "@fastify/rate-limit": "^9",
     "@smithy/protocol-http": "^3",
     "better-sqlite3": "^9",
-    "docker-stack-template": "file:../..",
     "dotenv": "^17.3.1",
     "eventsource": "^2",
     "fastify": "^4",
