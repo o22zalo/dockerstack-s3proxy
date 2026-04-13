@@ -30,5 +30,10 @@
     "pino-pretty": "^11",
     "prom-client": "^15",
     "undici": "^6"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3"
+    ]
   }
 }
