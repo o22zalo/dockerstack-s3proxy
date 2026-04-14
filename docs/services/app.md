@@ -23,8 +23,15 @@
 - `HEALTH_PATH` (default `/health`).
 - `DOCKER_VOLUMES_ROOT` (default `./.docker-volumes`).
 - `S3PROXY_SQLITE_PATH` (default `./.docker-volumes/s3proxy-data/routes.db`).
+- `S3PROXY_DEPLOY_VERSION` (default tự sinh UTC format `YYYY-MM-DD: HH:mm`): hiển thị version deploy trong admin UI.
+- `S3PROXY_CRON_ENABLED`, `S3PROXY_CRON_TIMEZONE`, `S3PROXY_CRON_RUN_ON_START`.
+- `S3PROXY_CRON_KEEPALIVE_ENABLED`, `S3PROXY_CRON_KEEPALIVE_EXPRESSION`, `S3PROXY_CRON_KEEPALIVE_MODE` (`scan` hoặc `touch`).
+- `S3PROXY_CRON_KEEPALIVE_PREFIX`, `S3PROXY_CRON_KEEPALIVE_CONTENT_PREFIX`.
+- `S3PROXY_ADMIN_TEST_PREFIX`: prefix object test đọc/ghi/xoá từ admin UI.
 - `TAILSCALE_TAILNET_DOMAIN`: route HTTPS nội bộ qua caddy_1.
 
 ## Routing
 - Public host: `${PROJECT_NAME}.${DOMAIN}` (+ alias).
 - Internal HTTPS host: `${PROJECT_NAME}.${TAILSCALE_TAILNET_DOMAIN}` với `tls internal`.
+- Admin UI: `GET /admin` (nên đặt sau Caddy Basic Auth nếu mở internet).
+- Admin API: `GET /admin/api/overview`, `POST /admin/api/test-s3`.

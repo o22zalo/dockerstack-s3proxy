@@ -59,6 +59,13 @@ function optionalBool(name, defaultValue) {
   return defaultValue;
 }
 
+function formatDeployVersion(value) {
+  if (value && value.trim()) return value.trim()
+  const now = new Date()
+  const pad = (v) => String(v).padStart(2, '0')
+  return `${now.getUTCFullYear()}-${pad(now.getUTCMonth() + 1)}-${pad(now.getUTCDate())}: ${pad(now.getUTCHours())}:${pad(now.getUTCMinutes())}`
+}
+
 function findWorkspaceRoot(startDir) {
   let current = resolve(startDir);
 
@@ -121,6 +128,16 @@ const config = Object.freeze({
   LRU_MAX: optionalInt("LRU_MAX", 10_000),
   LRU_TTL_MS: optionalInt("LRU_TTL_MS", 300_000),
   ALLOW_INSECURE_SIGV4_KEY_EXTRACT: optionalBool("ALLOW_INSECURE_SIGV4_KEY_EXTRACT", false),
+  DEPLOY_VERSION: formatDeployVersion(optionalEnv("DEPLOY_VERSION", "")),
+  CRON_ENABLED: optionalBool("CRON_ENABLED", true),
+  CRON_TIMEZONE: optionalEnv("CRON_TIMEZONE", "UTC"),
+  CRON_RUN_ON_START: optionalBool("CRON_RUN_ON_START", true),
+  CRON_KEEPALIVE_ENABLED: optionalBool("CRON_KEEPALIVE_ENABLED", true),
+  CRON_KEEPALIVE_EXPRESSION: optionalEnv("CRON_KEEPALIVE_EXPRESSION", "0 */4 * * *"),
+  CRON_KEEPALIVE_MODE: optionalEnv("CRON_KEEPALIVE_MODE", "scan"),
+  CRON_KEEPALIVE_PREFIX: optionalEnv("CRON_KEEPALIVE_PREFIX", "_s3proxy_keepalive"),
+  CRON_KEEPALIVE_CONTENT_PREFIX: optionalEnv("CRON_KEEPALIVE_CONTENT_PREFIX", "s3proxy-keepalive"),
+  ADMIN_TEST_PREFIX: optionalEnv("ADMIN_TEST_PREFIX", "_s3proxy_probe"),
 });
 
 export default config;

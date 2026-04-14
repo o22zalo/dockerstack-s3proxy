@@ -1,0 +1,41 @@
+Đã tuân thủ rule và hoàn tất triển khai cronjob mở rộng + admin frontend cho s3proxy.
+
+Input của user
+- Bổ sung cronjob cấu hình được để giữ Supabase S3 luôn hoạt động, có thể mở rộng thêm job.
+- Thêm frontend quản lý service s3proxy, theo dõi trạng thái account/số lượng/dung lượng.
+- Đăng nhập theo Caddy auth.
+- Có test thao tác file S3 để kiểm tra API.
+- Hiển thị version deploy dạng YYYY-MM-DD: HH:mm và có thể dùng env.
+
+Nguyên nhân gốc
+- Hệ thống chưa có scheduler nền để chạy job định kỳ keepalive cho các account S3.
+- Chưa có giao diện quản trị runtime và endpoint tổng hợp trạng thái/account/job.
+- Chưa có endpoint probe thao tác List/Put/Get/Delete trực tiếp trên account để test API.
+- Chưa có biến cấu hình deploy version và cron env trong compose.
+
+Cách đã chỉnh để khắc phục
+- Thêm module scheduler `src/cronScheduler.js` theo hướng registry job mở rộng, có start/stop/list và job keepalive mặc định.
+- Keepalive hỗ trợ 2 mode: `scan` (ListObjectsV2) hoặc `touch` (PutObject file keepalive).
+- Thêm admin routes `src/routes/admin.js` gồm:
+- `GET /admin` trả UI HTML quản trị.
+- `GET /admin/api/overview` trả trạng thái service + account + cron jobs + deploy version.
+- `POST /admin/api/test-s3` chạy probe List/Put/Get/Delete trên 1 hoặc tất cả account active.
+- Tích hợp route admin + cron scheduler vào bootstrap/shutdown ở `src/index.js`.
+- Bổ sung config/env mới cho deploy version, cron, admin test prefix trong `src/config.js` và `compose.apps.yml`.
+- Cập nhật docs service app để mô tả env mới và endpoint admin.
+
+File đã áp fix bug
+- services/s3proxy/src/cronScheduler.js
+- services/s3proxy/src/routes/admin.js
+- services/s3proxy/src/index.js
+- services/s3proxy/src/config.js
+- compose.apps.yml
+- docs/services/app.md
+
+Trả lời câu hỏi "Bổ sung cronjob keepalive, frontend quản trị, test file API, hiển thị deploy version"
+- Đã bổ sung cronjob keepalive có cấu hình cron expression/timezone/mode và chạy theo hướng mở rộng job.
+- Đã thêm frontend `/admin` để quản lý account, xem dung lượng/trạng thái/job, và chạy test file API.
+- Đã thêm hiển thị deploy version theo env `S3PROXY_DEPLOY_VERSION`, nếu trống sẽ tự sinh UTC format `YYYY-MM-DD: HH:mm`.
+- Luồng đăng nhập dùng Caddy auth được giữ ở tầng reverse proxy (khuyến nghị expose `/admin` sau Caddy Basic Auth).
+
+npm --prefix services/s3proxy test
