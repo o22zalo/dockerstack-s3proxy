@@ -35,3 +35,5 @@
 - Internal HTTPS host: `${PROJECT_NAME}.${TAILSCALE_TAILNET_DOMAIN}` với `tls internal`.
 - Admin UI: `GET /admin` (nên đặt sau Caddy Basic Auth nếu mở internet).
 - Admin API: `GET /admin/api/overview`, `POST /admin/api/test-s3`.
+- Cron API: `POST /admin/api/cron-jobs`, `POST /admin/api/cron-jobs/:jobId/run`, `DELETE /admin/api/cron-jobs/:jobId`.
+- Trong UI `/admin` đã có form để tạo/sửa cron job runtime (keepalive/probe) và chạy thủ công từng job.

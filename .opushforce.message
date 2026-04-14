@@ -1,41 +1,39 @@
-Đã tuân thủ rule và hoàn tất triển khai cronjob mở rộng + admin frontend cho s3proxy.
+Đã tuân thủ rule và hoàn tất nâng cấp admin để cấu hình cronjob runtime + đánh giá khả năng dùng với PocketBase.
 
 Input của user
-- Bổ sung cronjob cấu hình được để giữ Supabase S3 luôn hoạt động, có thể mở rộng thêm job.
-- Thêm frontend quản lý service s3proxy, theo dõi trạng thái account/số lượng/dung lượng.
-- Đăng nhập theo Caddy auth.
-- Có test thao tác file S3 để kiểm tra API.
-- Hiển thị version deploy dạng YYYY-MM-DD: HH:mm và có thể dùng env.
+- Kiểm tra codebase hiện tại có thể trỏ PocketBase vào s3proxy hay không.
+- Bổ sung admin để có thể cấu hình cronjob ngay trên giao diện.
+- Có thể bổ sung thêm cron khác ngoài keepalive.
 
 Nguyên nhân gốc
-- Hệ thống chưa có scheduler nền để chạy job định kỳ keepalive cho các account S3.
-- Chưa có giao diện quản trị runtime và endpoint tổng hợp trạng thái/account/job.
-- Chưa có endpoint probe thao tác List/Put/Get/Delete trực tiếp trên account để test API.
-- Chưa có biến cấu hình deploy version và cron env trong compose.
+- Phiên trước chỉ có cron mặc định keepalive theo env, chưa có API/UI CRUD cron.
+- Scheduler chưa lưu job linh hoạt vào DB nên khó mở rộng nhiều loại job runtime.
+- Chưa có phần tổng hợp compatibility cho PocketBase trong admin API/UI.
 
 Cách đã chỉnh để khắc phục
-- Thêm module scheduler `src/cronScheduler.js` theo hướng registry job mở rộng, có start/stop/list và job keepalive mặc định.
-- Keepalive hỗ trợ 2 mode: `scan` (ListObjectsV2) hoặc `touch` (PutObject file keepalive).
-- Thêm admin routes `src/routes/admin.js` gồm:
-- `GET /admin` trả UI HTML quản trị.
-- `GET /admin/api/overview` trả trạng thái service + account + cron jobs + deploy version.
-- `POST /admin/api/test-s3` chạy probe List/Put/Get/Delete trên 1 hoặc tất cả account active.
-- Tích hợp route admin + cron scheduler vào bootstrap/shutdown ở `src/index.js`.
-- Bổ sung config/env mới cho deploy version, cron, admin test prefix trong `src/config.js` và `compose.apps.yml`.
-- Cập nhật docs service app để mô tả env mới và endpoint admin.
+- Mở rộng SQLite schema với bảng `cron_jobs` và thêm hàm DB CRUD cho cron jobs.
+- Viết lại scheduler `src/cronScheduler.js` để:
+- Nạp job từ DB.
+- Quản lý runtime trạng thái (last run, status, duration).
+- Hỗ trợ nhiều loại job (`keepalive_scan`, `keepalive_touch`, `probe_active_accounts`).
+- Cho phép save/update/delete/run-now job qua API nội bộ.
+- Giữ default system job `system.supabase-keepalive` khi bật keepalive.
+- Nâng cấp admin routes:
+- Thêm API cron: create/update, run now, delete.
+- Thêm compatibility report cho PocketBase trong `/admin/api/overview`.
+- Giữ API test file S3.
+- Tách UI admin ra file `src/admin-ui.html` để dễ bảo trì, thêm form quản lý cron jobs trực tiếp.
+- Cập nhật docs để mô tả cron API mới và khả năng config cron trong UI.
 
 File đã áp fix bug
+- services/s3proxy/src/db.js
 - services/s3proxy/src/cronScheduler.js
 - services/s3proxy/src/routes/admin.js
-- services/s3proxy/src/index.js
-- services/s3proxy/src/config.js
-- compose.apps.yml
+- services/s3proxy/src/admin-ui.html
 - docs/services/app.md
 
-Trả lời câu hỏi "Bổ sung cronjob keepalive, frontend quản trị, test file API, hiển thị deploy version"
-- Đã bổ sung cronjob keepalive có cấu hình cron expression/timezone/mode và chạy theo hướng mở rộng job.
-- Đã thêm frontend `/admin` để quản lý account, xem dung lượng/trạng thái/job, và chạy test file API.
-- Đã thêm hiển thị deploy version theo env `S3PROXY_DEPLOY_VERSION`, nếu trống sẽ tự sinh UTC format `YYYY-MM-DD: HH:mm`.
-- Luồng đăng nhập dùng Caddy auth được giữ ở tầng reverse proxy (khuyến nghị expose `/admin` sau Caddy Basic Auth).
+Trả lời câu hỏi "Kiểm tra có thể trỏ PocketBase vào s3proxy không, và bổ sung admin cấu hình cron"
+- Có thể trỏ PocketBase vào s3proxy cho luồng object chính (PUT/GET/DELETE/HEAD, multipart, list); đã thêm compatibility summary trong admin overview.
+- Admin đã có form và API để cấu hình cronjob runtime, bao gồm thêm loại cron mới, bật/tắt, sửa expression/timezone/payload và chạy tay từng job.
 
 npm --prefix services/s3proxy test

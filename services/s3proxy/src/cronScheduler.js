@@ -1,16 +1,30 @@
 /**
  * src/cronScheduler.js
- * Configurable cron scheduler + keepalive jobs (extensible registry).
+ * Runtime cron scheduler with persisted jobs + extensible job kinds.
  */
 
+import { randomUUID } from 'crypto'
 import { ListObjectsV2Command, PutObjectCommand } from '@aws-sdk/client-s3'
 
 import config from './config.js'
-import { getAllActiveAccounts } from './db.js'
 import { createS3Client } from './inventoryScanner.js'
+import {
+  deleteCronJob,
+  getAllActiveAccounts,
+  getAllCronJobs,
+  getCronJobById,
+  upsertCronJob,
+} from './db.js'
 
 const jobs = new Map()
 let schedulerTimer = null
+let activeLogger = console
+
+const JOB_KIND = Object.freeze({
+  KEEPALIVE_SCAN: 'keepalive_scan',
+  KEEPALIVE_TOUCH: 'keepalive_touch',
+  PROBE_ACTIVE_ACCOUNTS: 'probe_active_accounts',
+})
 
 function parseCronField(field, min, max) {
   const normalized = String(field).trim()
@@ -33,12 +47,14 @@ function parseCronField(field, min, max) {
 function parseCronExpression(expression) {
   const fields = String(expression).trim().split(/\s+/)
   if (fields.length !== 5) return null
+
   const [minuteRaw, hourRaw, dayRaw, monthRaw, weekdayRaw] = fields
   const minute = parseCronField(minuteRaw, 0, 59)
   const hour = parseCronField(hourRaw, 0, 23)
   const day = parseCronField(dayRaw, 1, 31)
   const month = parseCronField(monthRaw, 1, 12)
   const weekday = parseCronField(weekdayRaw, 0, 6)
+
   if (!minute || !hour || !day || !month || !weekday) return null
   return { minute, hour, day, month, weekday }
 }
@@ -50,36 +66,121 @@ function matchField(rule, value) {
   return rule.values?.has(value) ?? false
 }
 
+function getDateInTimezone(date, timezone = 'UTC') {
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone,
+    hour12: false,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    weekday: 'short',
+  })
+
+  const parts = formatter.formatToParts(date)
+  const read = (type) => parts.find((item) => item.type === type)?.value
+  const weekdayMap = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 }
+
+  return {
+    year: Number.parseInt(read('year') || '0', 10),
+    month: Number.parseInt(read('month') || '0', 10),
+    day: Number.parseInt(read('day') || '0', 10),
+    hour: Number.parseInt(read('hour') || '0', 10),
+    minute: Number.parseInt(read('minute') || '0', 10),
+    weekday: weekdayMap[read('weekday')] ?? 0,
+  }
+}
+
 function shouldRun(descriptor, date = new Date()) {
   const rule = descriptor.parsedExpression
   if (!rule) return false
-  return matchField(rule.minute, date.getUTCMinutes())
-    && matchField(rule.hour, date.getUTCHours())
-    && matchField(rule.day, date.getUTCDate())
-    && matchField(rule.month, date.getUTCMonth() + 1)
-    && matchField(rule.weekday, date.getUTCDay())
+
+  const zoned = getDateInTimezone(date, descriptor.timezone)
+  return matchField(rule.minute, zoned.minute)
+    && matchField(rule.hour, zoned.hour)
+    && matchField(rule.day, zoned.day)
+    && matchField(rule.month, zoned.month)
+    && matchField(rule.weekday, zoned.weekday)
 }
 
-function normalizeMode(mode = '') {
-  const value = String(mode).trim().toLowerCase()
-  if (['touch', 'put'].includes(value)) return 'touch'
-  return 'scan'
+function parsePayload(payloadJson = '{}') {
+  try {
+    const parsed = JSON.parse(payloadJson)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    return parsed
+  } catch {
+    return {}
+  }
 }
 
-async function runKeepaliveScan(account, logger) {
+function sanitizeJobInput(payload = {}, existing = null) {
+  const kind = String(payload.kind ?? existing?.kind ?? '').trim()
+  if (!Object.values(JOB_KIND).includes(kind)) {
+    throw new Error(`Unsupported cron kind: ${kind}`)
+  }
+
+  const expression = String(payload.expression ?? existing?.expression ?? '').trim()
+  const parsedExpression = parseCronExpression(expression)
+  if (!parsedExpression) {
+    throw new Error(`Invalid cron expression: ${expression}`)
+  }
+
+  const timezone = String(payload.timezone ?? existing?.timezone ?? config.CRON_TIMEZONE).trim() || 'UTC'
+  const enabled = payload.enabled === undefined
+    ? (existing?.enabled === 1 || existing?.enabled === true)
+    : Boolean(payload.enabled)
+
+  const name = String(payload.name ?? existing?.name ?? `${kind}-${randomUUID().slice(0, 8)}`).trim()
+  if (!name) {
+    throw new Error('Cron name is required')
+  }
+
+  const payloadObject = payload.payload && typeof payload.payload === 'object' && !Array.isArray(payload.payload)
+    ? payload.payload
+    : parsePayload(existing?.payload_json)
+
+  return {
+    job_id: String(payload.jobId ?? existing?.job_id ?? randomUUID()),
+    name,
+    kind,
+    expression,
+    timezone,
+    enabled,
+    payload_json: JSON.stringify(payloadObject),
+    parsedExpression,
+    source: String(payload.source ?? existing?.source ?? 'user'),
+  }
+}
+
+async function runKeepaliveScan(account, jobPayload = {}) {
   const client = createS3Client(account)
   await client.send(new ListObjectsV2Command({
     Bucket: account.bucket,
-    MaxKeys: 1,
-    Prefix: config.CRON_KEEPALIVE_PREFIX,
+    MaxKeys: Number(jobPayload.maxKeys ?? 1),
+    Prefix: String(jobPayload.prefix ?? config.CRON_KEEPALIVE_PREFIX),
   }))
-  logger.info?.({ accountId: account.account_id, bucket: account.bucket }, 'cron keepalive scan ok')
 }
 
-async function runKeepaliveTouch(account, logger) {
+async function runKeepaliveTouch(account, jobPayload = {}) {
   const client = createS3Client(account)
-  const key = `${config.CRON_KEEPALIVE_PREFIX.replace(/\/$/, '')}/${account.account_id}.txt`
-  const payload = `${config.CRON_KEEPALIVE_CONTENT_PREFIX} ${new Date().toISOString()}\n`
+  const prefix = String(jobPayload.prefix ?? config.CRON_KEEPALIVE_PREFIX).replace(/\/$/, '')
+  const key = `${prefix}/${account.account_id}.txt`
+  const bodyPrefix = String(jobPayload.contentPrefix ?? config.CRON_KEEPALIVE_CONTENT_PREFIX)
+
+  await client.send(new PutObjectCommand({
+    Bucket: account.bucket,
+    Key: key,
+    Body: `${bodyPrefix} ${new Date().toISOString()}\n`,
+    ContentType: 'text/plain; charset=utf-8',
+  }))
+}
+
+async function runProbeActiveAccounts(account, jobPayload = {}) {
+  const client = createS3Client(account)
+  const prefix = String(jobPayload.prefix ?? config.ADMIN_TEST_PREFIX).replace(/\/$/, '')
+  const key = `${prefix}/${account.account_id}-${Date.now()}.txt`
+  const payload = `probe ${new Date().toISOString()}`
 
   await client.send(new PutObjectCommand({
     Bucket: account.bucket,
@@ -87,108 +188,218 @@ async function runKeepaliveTouch(account, logger) {
     Body: payload,
     ContentType: 'text/plain; charset=utf-8',
   }))
-
-  logger.info?.({ accountId: account.account_id, key }, 'cron keepalive touch ok')
+  await client.send(new ListObjectsV2Command({ Bucket: account.bucket, Prefix: prefix, MaxKeys: 2 }))
 }
 
-export function registerCronJob(name, expression, runner, options = {}) {
-  const parsed = parseCronExpression(expression)
-  if (!expression || !parsed) {
-    throw new Error(`Invalid cron expression for ${name}: ${expression}`)
+async function executeJobByKind(descriptor) {
+  const payload = parsePayload(descriptor.payload_json)
+  const accounts = getAllActiveAccounts()
+
+  if (accounts.length === 0) {
+    activeLogger.warn?.({ job: descriptor.job_id }, 'cron skipped because no active account')
+    return
   }
 
-  const descriptor = {
-    name,
-    expression,
-    timezone: options.timezone || config.CRON_TIMEZONE,
-    runOnStartup: Boolean(options.runOnStartup),
-    enabled: true,
-    task: null,
-    runner,
-    parsedExpression: parsed,
+  for (const account of accounts) {
+    if (descriptor.kind === JOB_KIND.KEEPALIVE_TOUCH) {
+      await runKeepaliveTouch(account, payload)
+    } else if (descriptor.kind === JOB_KIND.PROBE_ACTIVE_ACCOUNTS) {
+      await runProbeActiveAccounts(account, payload)
+    } else {
+      await runKeepaliveScan(account, payload)
+    }
+  }
+}
+
+function toRuntimeDescriptor(row) {
+  const parsedExpression = parseCronExpression(row.expression)
+  if (!parsedExpression) return null
+
+  return {
+    ...row,
+    enabled: row.enabled === 1 || row.enabled === true,
+    parsedExpression,
     lastRunAt: null,
     lastRunStatus: null,
     lastRunError: null,
+    lastDurationMs: null,
+    lastTriggerMinute: null,
   }
+}
 
-  jobs.set(name, descriptor)
+function upsertRuntimeDescriptor(row) {
+  const descriptor = toRuntimeDescriptor(row)
+  if (!descriptor) {
+    throw new Error(`Invalid expression in DB for ${row.job_id}`)
+  }
+  const previous = jobs.get(row.job_id)
+  if (previous) {
+    descriptor.lastRunAt = previous.lastRunAt
+    descriptor.lastRunStatus = previous.lastRunStatus
+    descriptor.lastRunError = previous.lastRunError
+    descriptor.lastDurationMs = previous.lastDurationMs
+    descriptor.lastTriggerMinute = previous.lastTriggerMinute
+  }
+  jobs.set(row.job_id, descriptor)
   return descriptor
 }
 
 async function runDescriptor(descriptor) {
-  descriptor.lastRunAt = Date.now()
+  const startedAt = Date.now()
+  descriptor.lastRunAt = startedAt
+
   try {
-    await descriptor.runner()
+    await executeJobByKind(descriptor)
     descriptor.lastRunStatus = 'ok'
     descriptor.lastRunError = null
   } catch (err) {
     descriptor.lastRunStatus = 'error'
     descriptor.lastRunError = err?.message ?? String(err)
     throw err
+  } finally {
+    descriptor.lastDurationMs = Date.now() - startedAt
   }
 }
 
-function buildKeepaliveRunner(logger) {
-  return async () => {
-    const accounts = getAllActiveAccounts()
-    const mode = normalizeMode(config.CRON_KEEPALIVE_MODE)
+function ensureDefaultJobs() {
+  if (!config.CRON_KEEPALIVE_ENABLED) return
 
-    if (accounts.length === 0) {
-      logger.warn?.('cron keepalive skipped: no active account')
-      return
-    }
+  const defaults = getAllCronJobs().filter((job) => job.source === 'system')
+  const hasKeepalive = defaults.some((job) => job.job_id === 'system.supabase-keepalive')
+  if (hasKeepalive) return
 
-    for (const account of accounts) {
-      if (mode === 'touch') {
-        await runKeepaliveTouch(account, logger)
-      } else {
-        await runKeepaliveScan(account, logger)
-      }
+  const defaultKind = String(config.CRON_KEEPALIVE_MODE).trim().toLowerCase() === 'touch'
+    ? JOB_KIND.KEEPALIVE_TOUCH
+    : JOB_KIND.KEEPALIVE_SCAN
+
+  upsertCronJob({
+    job_id: 'system.supabase-keepalive',
+    name: 'Supabase Keepalive',
+    kind: defaultKind,
+    expression: config.CRON_KEEPALIVE_EXPRESSION,
+    timezone: config.CRON_TIMEZONE,
+    enabled: true,
+    source: 'system',
+    payload_json: {
+      prefix: config.CRON_KEEPALIVE_PREFIX,
+      contentPrefix: config.CRON_KEEPALIVE_CONTENT_PREFIX,
+      maxKeys: 1,
+    },
+  })
+}
+
+function rebuildRuntimeJobs() {
+  jobs.clear()
+  for (const row of getAllCronJobs()) {
+    try {
+      upsertRuntimeDescriptor(row)
+    } catch (err) {
+      activeLogger.error?.({ err, jobId: row.job_id }, 'skip invalid cron row')
     }
   }
+}
+
+function schedulerTick() {
+  const now = new Date()
+
+  for (const descriptor of jobs.values()) {
+    if (!descriptor.enabled) continue
+    if (!shouldRun(descriptor, now)) continue
+
+    const minuteKey = `${descriptor.timezone}:${now.toISOString().slice(0, 16)}`
+    if (descriptor.lastTriggerMinute === minuteKey) continue
+    descriptor.lastTriggerMinute = minuteKey
+
+    runDescriptor(descriptor).catch((err) => {
+      activeLogger.error?.({ err, job: descriptor.job_id }, 'cron job failed')
+    })
+  }
+}
+
+export function listCronJobs() {
+  return [...jobs.values()]
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((job) => ({
+      jobId: job.job_id,
+      name: job.name,
+      kind: job.kind,
+      expression: job.expression,
+      timezone: job.timezone,
+      enabled: job.enabled,
+      source: job.source,
+      payload: parsePayload(job.payload_json),
+      lastRunAt: job.lastRunAt,
+      lastRunStatus: job.lastRunStatus,
+      lastRunError: job.lastRunError,
+      lastDurationMs: job.lastDurationMs,
+    }))
+}
+
+export function getCronJobKinds() {
+  return Object.values(JOB_KIND)
+}
+
+export function saveCronJob(payload) {
+  const existing = payload.jobId ? getCronJobById(payload.jobId) : null
+  const normalized = sanitizeJobInput(payload, existing)
+  const saved = upsertCronJob(normalized)
+  const descriptor = upsertRuntimeDescriptor(saved)
+
+  return {
+    jobId: descriptor.job_id,
+    name: descriptor.name,
+    kind: descriptor.kind,
+    expression: descriptor.expression,
+    timezone: descriptor.timezone,
+    enabled: descriptor.enabled,
+    source: descriptor.source,
+    payload: parsePayload(descriptor.payload_json),
+  }
+}
+
+export function removeCronJob(jobId) {
+  const current = getCronJobById(jobId)
+  if (!current) return false
+  if (current.source === 'system') {
+    throw new Error('System cron job cannot be deleted')
+  }
+
+  deleteCronJob(jobId)
+  jobs.delete(jobId)
+  return true
+}
+
+export async function runCronJobNow(jobId) {
+  const descriptor = jobs.get(jobId)
+  if (!descriptor) {
+    throw new Error(`Cron job not found: ${jobId}`)
+  }
+  await runDescriptor(descriptor)
+  return descriptor
 }
 
 export async function startCronScheduler(logger = console) {
+  activeLogger = logger
+
   if (!config.CRON_ENABLED) {
     logger.info?.('cron scheduler disabled by CRON_ENABLED=false')
     return
   }
 
-  if (config.CRON_KEEPALIVE_ENABLED) {
-    const keepalive = registerCronJob(
-      'supabase-keepalive',
-      config.CRON_KEEPALIVE_EXPRESSION,
-      buildKeepaliveRunner(logger),
-      {
-        timezone: config.CRON_TIMEZONE,
-        runOnStartup: config.CRON_RUN_ON_START,
-        logger,
-      },
-    )
+  ensureDefaultJobs()
+  rebuildRuntimeJobs()
 
-    if (keepalive.runOnStartup) {
-      runDescriptor(keepalive).catch((err) => {
-        logger.error?.({ err }, 'initial keepalive run failed')
+  if (config.CRON_RUN_ON_START) {
+    for (const descriptor of jobs.values()) {
+      if (!descriptor.enabled || descriptor.source !== 'system') continue
+      runDescriptor(descriptor).catch((err) => {
+        logger.error?.({ err, job: descriptor.job_id }, 'initial cron run failed')
       })
     }
   }
 
   if (schedulerTimer) clearInterval(schedulerTimer)
-  schedulerTimer = setInterval(() => {
-    const now = new Date()
-    for (const descriptor of jobs.values()) {
-      if (!descriptor.enabled) continue
-      if (!shouldRun(descriptor, now)) continue
-
-      const minuteKey = now.toISOString().slice(0, 16)
-      if (descriptor.lastTriggerMinute === minuteKey) continue
-      descriptor.lastTriggerMinute = minuteKey
-
-      runDescriptor(descriptor).catch((err) => {
-        logger.error?.({ err, job: descriptor.name }, 'cron job failed')
-      })
-    }
-  }, 10_000)
+  schedulerTimer = setInterval(schedulerTick, 10_000)
   schedulerTimer.unref?.()
 
   logger.info?.({ jobs: listCronJobs() }, 'cron scheduler started')
@@ -198,16 +409,4 @@ export function stopCronScheduler() {
   if (schedulerTimer) clearInterval(schedulerTimer)
   schedulerTimer = null
   jobs.clear()
-}
-
-export function listCronJobs() {
-  return [...jobs.values()].map((job) => ({
-    name: job.name,
-    expression: job.expression,
-    timezone: job.timezone,
-    enabled: job.enabled,
-    lastRunAt: job.lastRunAt,
-    lastRunStatus: job.lastRunStatus,
-    lastRunError: job.lastRunError,
-  }))
 }
