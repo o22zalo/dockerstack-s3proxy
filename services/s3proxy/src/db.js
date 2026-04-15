@@ -130,6 +130,19 @@ db.exec(`
     deleted_at        INTEGER,
     versioning_status TEXT    NOT NULL DEFAULT ''
   );
+
+  CREATE TABLE IF NOT EXISTS cron_jobs (
+    job_id       TEXT    PRIMARY KEY,
+    name         TEXT    NOT NULL,
+    kind         TEXT    NOT NULL,
+    expression   TEXT    NOT NULL,
+    timezone     TEXT    NOT NULL DEFAULT 'UTC',
+    enabled      INTEGER NOT NULL DEFAULT 1,
+    payload_json TEXT    NOT NULL DEFAULT '{}',
+    source       TEXT    NOT NULL DEFAULT 'user',
+    created_at   INTEGER NOT NULL,
+    updated_at   INTEGER NOT NULL
+  );
 `)
 
 ensureColumn('routes', 'backend_key', "backend_key TEXT NOT NULL DEFAULT ''")
@@ -202,6 +215,7 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_routes_state ON routes(state, account_id);
   CREATE INDEX IF NOT EXISTS idx_accounts_active ON accounts(active, used_bytes);
   CREATE INDEX IF NOT EXISTS idx_buckets_deleted ON buckets(deleted_at, bucket);
+  CREATE INDEX IF NOT EXISTS idx_cron_jobs_enabled ON cron_jobs(enabled, updated_at);
 `)
 
 function isUsageCounted(route) {
@@ -292,6 +306,31 @@ const stmts = {
     SET used_bytes = MAX(0, @bytes)
     WHERE account_id = @account_id
   `),
+  upsertCronJob: db.prepare(`
+    INSERT INTO cron_jobs (
+      job_id, name, kind, expression, timezone, enabled,
+      payload_json, source, created_at, updated_at
+    ) VALUES (
+      @job_id, @name, @kind, @expression, @timezone, @enabled,
+      @payload_json, @source, @created_at, @updated_at
+    )
+    ON CONFLICT(job_id) DO UPDATE SET
+      name = excluded.name,
+      kind = excluded.kind,
+      expression = excluded.expression,
+      timezone = excluded.timezone,
+      enabled = excluded.enabled,
+      payload_json = excluded.payload_json,
+      source = excluded.source,
+      updated_at = excluded.updated_at
+  `),
+  getCronJobById: db.prepare(`SELECT * FROM cron_jobs WHERE job_id = ? LIMIT 1`),
+  getAllCronJobs: db.prepare(`
+    SELECT *
+    FROM cron_jobs
+    ORDER BY source DESC, updated_at DESC, job_id ASC
+  `),
+  deleteCronJob: db.prepare(`DELETE FROM cron_jobs WHERE job_id = ?`),
   upsertRoute: db.prepare(`
     INSERT INTO routes (
       encoded_key, account_id, bucket, object_key, backend_key,
@@ -467,6 +506,38 @@ export function getAccountById(accountId) {
 
 export function setUsedBytesAbsolute(accountId, bytes) {
   stmts.setUsedBytesAbsolute.run({ account_id: accountId, bytes })
+}
+
+export function upsertCronJob(job) {
+  const now = Date.now()
+  const existing = stmts.getCronJobById.get(job.job_id)
+  stmts.upsertCronJob.run({
+    job_id: job.job_id,
+    name: job.name,
+    kind: job.kind,
+    expression: job.expression,
+    timezone: job.timezone ?? 'UTC',
+    enabled: job.enabled ? 1 : 0,
+    payload_json: typeof job.payload_json === 'string'
+      ? job.payload_json
+      : JSON.stringify(job.payload_json ?? {}),
+    source: job.source ?? existing?.source ?? 'user',
+    created_at: existing?.created_at ?? now,
+    updated_at: now,
+  })
+  return stmts.getCronJobById.get(job.job_id)
+}
+
+export function getCronJobById(jobId) {
+  return stmts.getCronJobById.get(jobId)
+}
+
+export function getAllCronJobs() {
+  return stmts.getAllCronJobs.all()
+}
+
+export function deleteCronJob(jobId) {
+  stmts.deleteCronJob.run(jobId)
 }
 
 export function getBucket(bucket) {

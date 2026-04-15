@@ -36,6 +36,16 @@ services:
       SQLITE_PATH: "${S3PROXY_SQLITE_PATH:-./.docker-volumes/s3proxy-data/routes.db}"
       LRU_MAX: "${S3PROXY_LRU_MAX:-10000}"
       LRU_TTL_MS: "${S3PROXY_LRU_TTL_MS:-300000}"
+      DEPLOY_VERSION: "${S3PROXY_DEPLOY_VERSION:-}"
+      CRON_ENABLED: "${S3PROXY_CRON_ENABLED:-true}"
+      CRON_TIMEZONE: "${S3PROXY_CRON_TIMEZONE:-UTC}"
+      CRON_RUN_ON_START: "${S3PROXY_CRON_RUN_ON_START:-true}"
+      CRON_KEEPALIVE_ENABLED: "${S3PROXY_CRON_KEEPALIVE_ENABLED:-true}"
+      CRON_KEEPALIVE_EXPRESSION: "${S3PROXY_CRON_KEEPALIVE_EXPRESSION:-0 */4 * * *}"
+      CRON_KEEPALIVE_MODE: "${S3PROXY_CRON_KEEPALIVE_MODE:-scan}"
+      CRON_KEEPALIVE_PREFIX: "${S3PROXY_CRON_KEEPALIVE_PREFIX:-_s3proxy_keepalive}"
+      CRON_KEEPALIVE_CONTENT_PREFIX: "${S3PROXY_CRON_KEEPALIVE_CONTENT_PREFIX:-s3proxy-keepalive}"
+      ADMIN_TEST_PREFIX: "${S3PROXY_ADMIN_TEST_PREFIX:-_s3proxy_probe}"
       # Joplin/S3 clients use SigV4 auth headers and cannot send x-api-key directly.
       # Keep compatibility ON by default; set to "false" for strict header-only auth mode.
       ALLOW_INSECURE_SIGV4_KEY_EXTRACT: "${S3PROXY_ALLOW_INSECURE_SIGV4_KEY_EXTRACT:-true}"

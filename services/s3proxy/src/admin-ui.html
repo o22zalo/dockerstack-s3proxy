@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>S3Proxy Admin</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { font-family: Inter, Arial, sans-serif; margin: 0; background: #0b1020; color: #e5e7eb; }
+    .wrap { max-width: 1200px; margin: 0 auto; padding: 24px; }
+    .card { background: #111a31; border: 1px solid #223156; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+    h1, h2 { margin: 0 0 12px; }
+    .meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
+    .pill { padding: 8px 10px; background: #1a2745; border-radius: 8px; font-size: 13px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align: left; padding: 8px; border-bottom: 1px solid #24355f; vertical-align: top; }
+    button { cursor: pointer; border: 0; background: #2563eb; color: #fff; padding: 8px 12px; border-radius: 8px; }
+    button.secondary { background: #374151; }
+    button.warn { background: #b45309; }
+    button.danger { background: #b91c1c; }
+    .actions { display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+    .ok { color: #34d399; }
+    .bad { color: #f87171; }
+    pre { white-space: pre-wrap; word-break: break-word; background: #0f172a; padding: 10px; border-radius: 8px; }
+    form { display: grid; grid-template-columns: repeat(auto-fit,minmax(180px,1fr)); gap: 8px; }
+    input, select, textarea { width: 100%; box-sizing: border-box; background: #0f172a; border: 1px solid #2c3c65; color: #e5e7eb; border-radius: 8px; padding: 8px; }
+    textarea { min-height: 82px; }
+    .hint { font-size: 12px; color: #9ca3af; margin-top: 8px; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <h1>S3Proxy Admin</h1>
+  <div class="actions">
+    <button id="refreshBtn">Refresh trạng thái</button>
+    <button id="testAllBtn" class="secondary">Test file operations (all active)</button>
+  </div>
+
+  <section class="card">
+    <h2>Tổng quan</h2>
+    <div class="meta" id="meta"></div>
+  </section>
+
+  <section class="card">
+    <h2>PocketBase compatibility</h2>
+    <pre id="compat"></pre>
+  </section>
+
+  <section class="card">
+    <h2>Cron jobs</h2>
+    <form id="cronForm">
+      <input id="jobId" placeholder="jobId (để trống = tạo mới)" />
+      <input id="jobName" placeholder="Tên job" required />
+      <select id="jobKind"></select>
+      <input id="jobExpression" placeholder="Cron expression (vd: 0 */4 * * *)" required />
+      <input id="jobTimezone" placeholder="Timezone (vd: UTC, Asia/Ho_Chi_Minh)" value="UTC" />
+      <select id="jobEnabled"><option value="true">enabled</option><option value="false">disabled</option></select>
+      <textarea id="jobPayload" placeholder='JSON payload (vd: {"prefix":"_s3proxy_keepalive"})'>{}</textarea>
+      <button type="submit">Lưu cron job</button>
+    </form>
+    <p class="hint">Kinds mặc định: keepalive_scan, keepalive_touch, probe_active_accounts.</p>
+    <table>
+      <thead><tr><th>Job</th><th>Type</th><th>Schedule</th><th>Status</th><th>Payload</th><th>Action</th></tr></thead>
+      <tbody id="jobsBody"></tbody>
+    </table>
+  </section>
+
+  <section class="card">
+    <h2>Accounts</h2>
+    <table>
+      <thead><tr><th>Account</th><th>Bucket</th><th>Used/Quota</th><th>Percent</th><th>Status</th><th>Action</th></tr></thead>
+      <tbody id="accountsBody"></tbody>
+    </table>
+  </section>
+
+  <section class="card">
+    <h2>Kết quả kiểm thử API file</h2>
+    <pre id="log">(chưa chạy)</pre>
+  </section>
+</div>
+
+<script>
+const metaEl = document.getElementById('meta')
+const compatEl = document.getElementById('compat')
+const jobsBody = document.getElementById('jobsBody')
+const accountsBody = document.getElementById('accountsBody')
+const logEl = document.getElementById('log')
+const refreshBtn = document.getElementById('refreshBtn')
+const testAllBtn = document.getElementById('testAllBtn')
+const cronForm = document.getElementById('cronForm')
+
+function fmtBytes(bytes) {
+  if (!bytes) return '0 B'
+  const units = ['B','KB','MB','GB','TB']
+  let value = bytes
+  let idx = 0
+  while (value >= 1024 && idx < units.length - 1) { value /= 1024; idx++ }
+  return value.toFixed(2) + ' ' + units[idx]
+}
+
+function fmtTime(ts) {
+  if (!ts) return '-'
+  return new Date(ts).toISOString().replace('T', ' ').slice(0, 16)
+}
+
+async function api(path, options = {}) {
+  const res = await fetch(path, options)
+  const body = await res.json()
+  if (!res.ok) {
+    throw new Error(body.error || res.statusText)
+  }
+  return body
+}
+
+function bindCronForm(kinds) {
+  const select = document.getElementById('jobKind')
+  select.innerHTML = kinds.map((kind) => `<option value="${kind}">${kind}</option>`).join('')
+}
+
+async function refresh() {
+  const body = await api('/admin/api/overview')
+  const healthClass = body.status === 'ok' ? 'ok' : 'bad'
+
+  metaEl.innerHTML = `
+    <div class="pill">Deploy version: <b>${body.deployVersion}</b></div>
+    <div class="pill">Instance: <b>${body.instanceId}</b></div>
+    <div class="pill">Status: <b class="${healthClass}">${body.status}</b></div>
+    <div class="pill">Accounts active/total: <b>${body.stats.active}/${body.stats.total}</b></div>
+    <div class="pill">Used total: <b>${fmtBytes(body.stats.usedBytes)} / ${fmtBytes(body.stats.totalBytes)}</b></div>
+    <div class="pill">RTDB connected: <b>${body.rtdb.connected}</b> | listener: <b>${body.rtdb.listenerActive}</b></div>
+  `
+
+  compatEl.textContent = JSON.stringify(body.compatibility, null, 2)
+  bindCronForm(body.cronKinds)
+
+  jobsBody.innerHTML = body.jobs.map((job) => {
+    const statusClass = job.lastRunStatus === 'ok' ? 'ok' : (job.lastRunStatus === 'error' ? 'bad' : '')
+    const delBtn = job.source === 'system'
+      ? '<button class="danger" disabled>delete</button>'
+      : `<button class="danger" data-delete="${job.jobId}">delete</button>`
+
+    return `<tr>
+      <td>${job.name}<br/><span class="hint">${job.jobId} (${job.source})</span></td>
+      <td>${job.kind}</td>
+      <td>${job.expression}<br/><span class="hint">${job.timezone} | enabled=${job.enabled}</span></td>
+      <td class="${statusClass}">${job.lastRunStatus || '-'}<br/><span class="hint">${fmtTime(job.lastRunAt)} (${job.lastDurationMs || 0}ms)</span></td>
+      <td><pre>${JSON.stringify(job.payload || {}, null, 2)}</pre></td>
+      <td>
+        <button class="warn" data-run="${job.jobId}">run now</button>
+        <button class="secondary" data-edit="${job.jobId}">edit</button>
+        ${delBtn}
+      </td>
+    </tr>`
+  }).join('')
+
+  jobsBody.querySelectorAll('button[data-run]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const jobId = button.getAttribute('data-run')
+      try {
+        await api(`/admin/api/cron-jobs/${encodeURIComponent(jobId)}/run`, { method: 'POST' })
+        await refresh()
+      } catch (err) {
+        logEl.textContent = String(err)
+      }
+    })
+  })
+
+  jobsBody.querySelectorAll('button[data-edit]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const job = body.jobs.find((item) => item.jobId === button.getAttribute('data-edit'))
+      if (!job) return
+      document.getElementById('jobId').value = job.jobId
+      document.getElementById('jobName').value = job.name
+      document.getElementById('jobKind').value = job.kind
+      document.getElementById('jobExpression').value = job.expression
+      document.getElementById('jobTimezone').value = job.timezone
+      document.getElementById('jobEnabled').value = String(job.enabled)
+      document.getElementById('jobPayload').value = JSON.stringify(job.payload || {}, null, 2)
+    })
+  })
+
+  jobsBody.querySelectorAll('button[data-delete]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const jobId = button.getAttribute('data-delete')
+      try {
+        await api(`/admin/api/cron-jobs/${encodeURIComponent(jobId)}`, { method: 'DELETE' })
+        await refresh()
+      } catch (err) {
+        logEl.textContent = String(err)
+      }
+    })
+  })
+
+  accountsBody.innerHTML = body.accounts.map((account) => `
+    <tr>
+      <td>${account.accountId}</td>
+      <td>${account.bucket}</td>
+      <td>${fmtBytes(account.usedBytes)} / ${fmtBytes(account.quotaBytes)}</td>
+      <td>${account.usedPercent}%</td>
+      <td class="${account.active ? 'ok' : 'bad'}">${account.active ? 'active' : 'inactive'}</td>
+      <td><button data-account="${account.accountId}">Test</button></td>
+    </tr>
+  `).join('')
+
+  accountsBody.querySelectorAll('button[data-account]').forEach((button) => {
+    button.addEventListener('click', () => runTest(button.getAttribute('data-account')))
+  })
+}
+
+async function runTest(accountId) {
+  logEl.textContent = 'Đang test account ' + accountId + '...'
+  try {
+    const body = await api('/admin/api/test-s3', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ accountId })
+    })
+    logEl.textContent = JSON.stringify(body, null, 2)
+  } catch (err) {
+    logEl.textContent = String(err)
+  }
+}
+
+cronForm.addEventListener('submit', async (event) => {
+  event.preventDefault()
+  try {
+    const payload = {
+      jobId: document.getElementById('jobId').value.trim() || undefined,
+      name: document.getElementById('jobName').value.trim(),
+      kind: document.getElementById('jobKind').value,
+      expression: document.getElementById('jobExpression').value.trim(),
+      timezone: document.getElementById('jobTimezone').value.trim(),
+      enabled: document.getElementById('jobEnabled').value === 'true',
+      payload: JSON.parse(document.getElementById('jobPayload').value || '{}'),
+    }
+    await api('/admin/api/cron-jobs', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    await refresh()
+  } catch (err) {
+    logEl.textContent = String(err)
+  }
+})
+
+refreshBtn.addEventListener('click', refresh)
+testAllBtn.addEventListener('click', async () => {
+  logEl.textContent = 'Đang chạy test all active accounts...'
+  try {
+    const body = await api('/admin/api/test-s3', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ allActive: true })
+    })
+    logEl.textContent = JSON.stringify(body, null, 2)
+  } catch (err) {
+    logEl.textContent = String(err)
+  }
+})
+
+refresh().catch((err) => { logEl.textContent = String(err) })
+</script>
+</body>
+</html>

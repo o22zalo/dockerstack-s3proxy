@@ -28,12 +28,14 @@ import { routeFromRtdb, isVisibleRoute, toRouteCacheValue } from './metadata.js'
 import { setRtdbState } from './routes/health.js'
 import { metrics, refreshMetadataMetrics } from './routes/metrics.js'
 import { sendAlert } from './utils/webhook.js'
+import { startCronScheduler, stopCronScheduler } from './cronScheduler.js'
 
 import authPlugin from './plugins/auth.js'
 import errorHandler from './plugins/errorHandler.js'
 import healthRoutes from './routes/health.js'
 import metricsRoutes from './routes/metrics.js'
 import accountRoutes from './routes/accounts.js'
+import adminRoutes from './routes/admin.js'
 import s3Routes from './routes/s3.js'
 
 const log = pino({
@@ -184,6 +186,7 @@ async function shutdown(signal) {
 
   stopQuotaPoller()
   stopReconciler()
+  stopCronScheduler()
 
   if (routesListener) {
     try { routesListener.close() } catch {
@@ -296,6 +299,7 @@ async function bootstrap() {
   await fastify.register(healthRoutes)
   await fastify.register(metricsRoutes)
   await fastify.register(accountRoutes)
+  await fastify.register(adminRoutes)
   await fastify.register(s3Routes, { prefix: '/' })
 
   fastify.addHook('onSend', async (_request, reply) => {
@@ -334,6 +338,7 @@ async function bootstrap() {
 
   startQuotaPoller(log)
   startReconciler(log)
+  await startCronScheduler(log)
   refreshMetadataMetrics()
 
   try {
