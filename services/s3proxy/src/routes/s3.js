@@ -15,6 +15,8 @@ import {
   getAccountById,
   getBucket,
   getMultipartUpload,
+  getPublicBucket,
+  getPublicObjectLinkByToken,
   getRoute,
   listActiveBuckets,
   listVisibleObjectsPage,
@@ -24,7 +26,9 @@ import {
   revertDeletingRoute,
   ROUTE_RECONCILE_STATUS,
   ROUTE_STATE,
+  ensurePublicObjectLink,
   setBucketVersioningStatus,
+  touchPublicObjectLinkAccess,
   upsertMultipartUpload,
   deleteMultipartUpload,
 } from '../db.js'
@@ -253,6 +257,35 @@ function buildProxyLocation(request, bucket, objectKey) {
   const protocol = request.protocol || 'http'
   const host = request.headers.host || `localhost:${config.PORT}`
   return `${protocol}://${host}/${bucket}/${objectKey}`
+}
+
+function buildPublicObjectLocation(request, token) {
+  const protocol = request.protocol || 'http'
+  const host = request.headers.host || `localhost:${config.PORT}`
+  return `${protocol}://${host}/public/${token}`
+}
+
+function maybeAttachDirectLocation(request, reply, logicalBucket, route) {
+  const publicBucketConfig = getPublicBucket(logicalBucket)
+  const isPublic = Boolean(publicBucketConfig && (publicBucketConfig.enabled === 1 || publicBucketConfig.enabled === true))
+  if (!isPublic) return ''
+
+  const created = ensurePublicObjectLink({
+    token: randomBytes(18).toString('base64url'),
+    encoded_key: route.encoded_key,
+    account_id: route.account_id,
+    bucket: route.bucket,
+    object_key: route.object_key,
+    backend_key: route.backend_key,
+  })
+  if (!created?.token) return ''
+
+  const publicUrl = buildPublicObjectLocation(request, created.token)
+  reply.header('Location', publicUrl)
+  reply.header('x-s3proxy-direct-url', publicUrl)
+  reply.header('x-s3proxy-public-url', publicUrl)
+  reply.header('x-s3proxy-direct-enabled', 'true')
+  return publicUrl
 }
 
 function extractUploadId(xml) {
@@ -568,6 +601,49 @@ export default async function s3Routes(fastify, _opts) {
     reply.code(200).send('')
   })
 
+  fastify.get('/public/:token', {
+    config: { skipAuth: true },
+  }, async (request, reply) => {
+    const token = String(request.params?.token ?? '').trim()
+    if (!token) {
+      return reply.code(404).send('Not Found')
+    }
+
+    const link = getPublicObjectLinkByToken(token)
+    if (!link) {
+      return reply.code(404).send('Not Found')
+    }
+
+    const route = getRoute(link.encoded_key)
+    if (!route || route.state !== ROUTE_STATE.ACTIVE) {
+      return reply.code(404).send('Not Found')
+    }
+
+    const account = getAccountById(route.account_id)
+    if (!account) {
+      return reply.code(404).send('Not Found')
+    }
+
+    const upstream = await proxyRequest({
+      account,
+      method: 'GET',
+      path: `/${account.bucket}/${route.backend_key}`,
+      headers: {
+        'x-forwarded-request-id': request.id,
+      },
+    })
+
+    if (upstream.statusCode >= 400) {
+      return reply.code(upstream.statusCode).send(await consumeTextBody(upstream))
+    }
+
+    touchPublicObjectLinkAccess(token)
+    setForwardResponseHeaders(reply, upstream)
+    reply.header('Cache-Control', 'public, max-age=31536000, immutable')
+    reply.code(upstream.statusCode)
+    return reply.send(toReplyBody(upstream.body))
+  })
+
   const authHook = { preHandler: [fastify.authenticate] }
 
   // S3 expects raw request payload bytes for signing/integrity semantics.
@@ -767,6 +843,7 @@ export default async function s3Routes(fastify, _opts) {
     await syncCommittedRoute(committed.route, committed.affectedAccounts, request)
 
     metrics.uploadBytesTotal.inc({ account_id: target.account.account_id }, committed.route.size_bytes)
+    maybeAttachDirectLocation(request, reply, bucket, committed.route)
 
     reply.code(upstream.statusCode)
     return reply.send(await consumeTextBody(upstream))
@@ -1259,7 +1336,9 @@ export default async function s3Routes(fastify, _opts) {
       await syncCommittedRoute(committed.route, committed.affectedAccounts, request)
 
       const etag = backendMetadata.etag ?? upstream.headers.etag?.replace(/"/g, '') ?? nanoid(16)
-      const location = buildProxyLocation(request, bucket, objectKey)
+      const proxyLocation = buildProxyLocation(request, bucket, objectKey)
+      const directLocation = maybeAttachDirectLocation(request, reply, bucket, committed.route)
+      const location = directLocation || proxyLocation
 
       reply.code(200).header('Content-Type', XML_CONTENT_TYPE)
       return reply.send(buildCompleteMultipartUploadResult(bucket, objectKey, location, etag))

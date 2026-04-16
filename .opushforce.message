@@ -1,0 +1,28 @@
+Đã tuân thủ AGENTS và triển khai lại luồng public theo hướng bucket backend private + public link vĩnh viễn qua proxy.
+
+Input của user
+- Yêu cầu đổi hướng: bucket backend private nhưng vẫn sinh link public vô thời hạn.
+- Không muốn cấu hình S3 public vì có thể ảnh hưởng dữ liệu khác.
+- Cần xử lý các comment của PR trước và cập nhật docs/test tương ứng.
+
+Nguyên nhân gốc
+- Luồng trước trả direct backend URL nên muốn truy cập public phải mở quyền backend bucket/object.
+- Điều này không phù hợp khi cần giữ backend private để tránh ảnh hưởng dữ liệu khác.
+
+Cách đã chỉnh để khắc phục
+- Thêm bảng `public_object_links` để lưu mapping token <-> object metadata, duy trì link `/public/:token` ổn định.
+- Khi upload vào logical bucket đã bật public, proxy tạo/duy trì token và trả về URL proxy public thay vì backend URL thô.
+- Thêm route `GET /public/:token` không cần auth: proxy đọc object private từ backend bằng credential nội bộ rồi trả về client.
+- Cập nhật test server để verify upload public bucket trả `/public/...` và GET public URL không cần `x-api-key`.
+- Cập nhật lại tài liệu + file `.http` theo luồng mới (private backend, public link qua proxy).
+
+File đã áp fix bug
+- services/s3proxy/src/db.js
+- services/s3proxy/src/routes/s3.js
+- services/s3proxy/test/server.test.js
+- services/s3proxy/README.public-buckets.md
+- services/s3proxy/http/public-bucket-flow.http
+
+Trả lời câu hỏi "bucket private nhưng sinh link public vô thời hạn"
+- Đã triển khai đúng hướng này.
+- Link public nằm ở proxy (`/public/:token`), backend bucket vẫn giữ private.
