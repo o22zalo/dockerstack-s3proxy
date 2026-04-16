@@ -146,6 +146,12 @@ db.exec(`
     created_at   INTEGER NOT NULL,
     updated_at   INTEGER NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS public_buckets (
+    bucket      TEXT    PRIMARY KEY,
+    enabled     INTEGER NOT NULL DEFAULT 1,
+    updated_at  INTEGER NOT NULL
+  );
 `)
 
 ensureColumn('routes', 'backend_key', "backend_key TEXT NOT NULL DEFAULT ''")
@@ -222,6 +228,7 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_accounts_active ON accounts(active, used_bytes);
   CREATE INDEX IF NOT EXISTS idx_buckets_deleted ON buckets(deleted_at, bucket);
   CREATE INDEX IF NOT EXISTS idx_cron_jobs_enabled ON cron_jobs(enabled, updated_at);
+  CREATE INDEX IF NOT EXISTS idx_public_buckets_enabled ON public_buckets(enabled, bucket);
 `)
 
 function isUsageCounted(route) {
@@ -338,6 +345,21 @@ const stmts = {
     ORDER BY source DESC, updated_at DESC, job_id ASC
   `),
   deleteCronJob: db.prepare(`DELETE FROM cron_jobs WHERE job_id = ?`),
+  upsertPublicBucket: db.prepare(`
+    INSERT INTO public_buckets (bucket, enabled, updated_at)
+    VALUES (@bucket, @enabled, @updated_at)
+    ON CONFLICT(bucket) DO UPDATE SET
+      enabled = excluded.enabled,
+      updated_at = excluded.updated_at
+  `),
+  getPublicBucket: db.prepare(`
+    SELECT * FROM public_buckets WHERE bucket = ? LIMIT 1
+  `),
+  listPublicBuckets: db.prepare(`
+    SELECT * FROM public_buckets
+    ORDER BY enabled DESC, bucket ASC
+  `),
+  deletePublicBucket: db.prepare(`DELETE FROM public_buckets WHERE bucket = ?`),
   upsertRoute: db.prepare(`
     INSERT INTO routes (
       encoded_key, account_id, bucket, object_key, backend_key,
@@ -552,6 +574,31 @@ export function getAllCronJobs() {
 
 export function deleteCronJob(jobId) {
   stmts.deleteCronJob.run(jobId)
+}
+
+export function upsertPublicBucket(bucket, enabled = true, updatedAt = Date.now()) {
+  const normalizedBucket = String(bucket ?? '').trim()
+  if (!normalizedBucket) return null
+
+  stmts.upsertPublicBucket.run({
+    bucket: normalizedBucket,
+    enabled: enabled ? 1 : 0,
+    updated_at: updatedAt,
+  })
+
+  return stmts.getPublicBucket.get(normalizedBucket)
+}
+
+export function getPublicBucket(bucket) {
+  return stmts.getPublicBucket.get(bucket)
+}
+
+export function listPublicBuckets() {
+  return stmts.listPublicBuckets.all()
+}
+
+export function deletePublicBucket(bucket) {
+  return stmts.deletePublicBucket.run(bucket).changes > 0
 }
 
 export function getBucket(bucket) {

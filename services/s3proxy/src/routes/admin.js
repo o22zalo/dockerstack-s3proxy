@@ -18,9 +18,12 @@ import {
 import config from '../config.js'
 import {
   deleteAccount,
+  deletePublicBucket,
   getAccountById,
   getAllAccounts,
   getTrackedRoutesByAccount,
+  listPublicBuckets,
+  upsertPublicBucket,
   upsertAccount,
 } from '../db.js'
 import { getAccountsStats, reloadAccountsFromRTDB, reloadAccountsFromSQLite } from '../accountPool.js'
@@ -37,6 +40,7 @@ import {
 import { createS3Client } from '../inventoryScanner.js'
 import { resolveS3SigningRegion } from '../s3Signing.js'
 import {
+  createAccountDraftFromSupabase,
   isEmailOwner,
   isSupabaseAccessToken,
   normalizeSupabaseAccessTokenExp,
@@ -563,6 +567,62 @@ function parseBodyObject(body) {
   return body
 }
 
+function maskSecret(value, keep = 4) {
+  const text = normalizeString(value)
+  if (!text) return ''
+  if (text.length <= keep) return '*'.repeat(text.length)
+  return `${'*'.repeat(Math.max(2, text.length - keep))}${text.slice(-keep)}`
+}
+
+function sanitizeBucketName(value) {
+  const normalized = normalizeString(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9.-]+/g, '-')
+    .replace(/[.-]{2,}/g, '-')
+    .replace(/^[.-]+|[.-]+$/g, '')
+    .slice(0, 63)
+
+  if (!normalized || normalized.length < 3) return ''
+  if (!/^[a-z0-9]/.test(normalized) || !/[a-z0-9]$/.test(normalized)) return ''
+  return normalized
+}
+
+function parseBooleanLike(value, fallback = false) {
+  if (value === undefined || value === null || value === '') return fallback
+  if (typeof value === 'boolean') return value
+  const normalized = String(value).trim().toLowerCase()
+  if (['true', '1', 'yes', 'y', 'on'].includes(normalized)) return true
+  if (['false', '0', 'no', 'n', 'off'].includes(normalized)) return false
+  return fallback
+}
+
+function buildRawInputFromImportJson(payload) {
+  const email = normalizeString(payload?.email).toLowerCase()
+  const userExtras = Array.isArray(payload?.userExtras) ? payload.userExtras : []
+  const lines = []
+
+  if (email) lines.push(`emailOwner: ${email}`)
+  lines.push(`isSaveRtdbEmail: ${parseBooleanLike(payload?.isSaveRtdbEmail, true)}`)
+
+  for (const item of userExtras) {
+    if (!item || typeof item !== 'object') continue
+    const key = normalizeString(item.key)
+    const value = normalizeString(item.value)
+    if (!key || !value) continue
+    lines.push(`${key}: ${value}`)
+  }
+
+  return lines.join('\n')
+}
+
+function buildPublicBucketEntry(row) {
+  return {
+    bucket: row.bucket,
+    enabled: row.enabled === 1 || row.enabled === true,
+    updatedAt: row.updated_at ?? null,
+  }
+}
+
 export default async function adminRoutes(fastify, _opts) {
   fastify.get('/admin', {
     config: { skipAuth: true },
@@ -632,6 +692,56 @@ export default async function adminRoutes(fastify, _opts) {
     })
   })
 
+  fastify.get('/admin/api/public-buckets', {
+    config: { skipAuth: true },
+  }, async (_request, reply) => {
+    const buckets = listPublicBuckets().map(buildPublicBucketEntry)
+    return reply.send({
+      total: buckets.length,
+      buckets,
+    })
+  })
+
+  fastify.post('/admin/api/public-buckets', {
+    config: { skipAuth: true },
+  }, async (request, reply) => {
+    const payload = parseBodyObject(request.body)
+    const bucket = sanitizeBucketName(payload.bucket ?? payload.bucketName)
+    const enabled = parseBooleanLike(payload.enabled, true)
+
+    if (!bucket) {
+      return reply.code(400).send({
+        ok: false,
+        error: 'bucket is required and must be a valid bucket name',
+      })
+    }
+
+    const saved = upsertPublicBucket(bucket, enabled)
+    request.log.info({ bucket, enabled }, 'admin public bucket upsert completed')
+
+    return reply.send({
+      ok: true,
+      publicBucket: buildPublicBucketEntry(saved),
+    })
+  })
+
+  fastify.delete('/admin/api/public-buckets/:bucket', {
+    config: { skipAuth: true },
+  }, async (request, reply) => {
+    const bucket = sanitizeBucketName(request.params?.bucket)
+    if (!bucket) {
+      return reply.code(400).send({ ok: false, error: 'bucket is required' })
+    }
+
+    const removed = deletePublicBucket(bucket)
+    if (!removed) {
+      return reply.code(404).send({ ok: false, error: 'public bucket not found' })
+    }
+
+    request.log.info({ bucket }, 'admin public bucket removed')
+    return reply.send({ ok: true, bucket })
+  })
+
   fastify.post('/admin/api/account-services/preview', {
     config: { skipAuth: true },
   }, async (request, reply) => {
@@ -697,6 +807,118 @@ export default async function adminRoutes(fastify, _opts) {
       ok: true,
       service: 'supabaseS3',
       preview,
+    })
+  })
+
+  fastify.post('/admin/api/accounts/import-json', {
+    config: { skipAuth: true },
+  }, async (request, reply) => {
+    const payload = parseBodyObject(request.body)
+    const importPayload = payload.payload && typeof payload.payload === 'object' ? payload.payload : payload
+    const rawInput = buildRawInputFromImportJson(importPayload)
+    const defaultBucket = sanitizeBucketName(payload.bucketName ?? payload.defaultBucketName)
+    const createIfMissing = parseBooleanLike(payload.createBucketIfMissing, false)
+    const lookupRemote = parseBooleanLike(payload.lookupRemote, true)
+
+    if (!rawInput.trim()) {
+      return reply.code(400).send({
+        ok: false,
+        error: 'payload is required',
+      })
+    }
+
+    const preview = await previewSupabaseS3(rawInput, {
+      lookupRemote,
+      createBucketIfMissing: createIfMissing,
+      bucketName: defaultBucket || undefined,
+    })
+
+    const draft = createAccountDraftFromSupabase(preview, {
+      bucketName: defaultBucket || preview.remote?.bucketResolved || preview.extracted?.bucketName,
+      region: preview.remote?.project?.region || preview.extracted?.region,
+    })
+
+    if (!draft.bucket) {
+      return reply.code(400).send({
+        ok: false,
+        error: 'Không tìm thấy bucket name trong payload hoặc Supabase API',
+        detail: preview.remote?.error || 'bucketName missing',
+      })
+    }
+
+    const remoteBuckets = Array.isArray(preview.remote?.buckets) ? preview.remote.buckets : []
+    if (remoteBuckets.length > 0 && !remoteBuckets.includes(draft.bucket)) {
+      return reply.code(400).send({
+        ok: false,
+        error: `Bucket "${draft.bucket}" không tồn tại trong Supabase project`,
+        availableBuckets: remoteBuckets,
+      })
+    }
+
+    const normalized = normalizeAccountPayload(draft, getAccountById(draft.accountId))
+    if (normalized.errors.length > 0 || !normalized.row) {
+      return reply.code(400).send({
+        ok: false,
+        error: 'Không thể chuẩn hoá account từ JSON import',
+        errors: normalized.errors,
+      })
+    }
+
+    const bucketVerification = await verifyBucketExists(normalized.row, request.log)
+    if (bucketVerification.exists !== true) {
+      return reply.code(400).send({
+        ok: false,
+        error: `Bucket "${normalized.row.bucket}" chưa verify được trên backend`,
+        detail: bucketVerification.detail,
+        bucketVerification,
+      })
+    }
+
+    const existing = getAccountById(normalized.row.account_id)
+    upsertAccount(normalized.row)
+    reloadAccountsFromSQLite()
+
+    let rtdbSynced = true
+    let warning = ''
+    try {
+      await rtdbBatchPatch({
+        [buildRtdbAccountPath(normalized.row.account_id)]: toRtdbAccountDocument(normalized.row),
+      })
+      await reloadAccountsFromRTDB()
+    } catch (err) {
+      rtdbSynced = false
+      warning = `Account saved locally, but RTDB sync failed: ${err?.message ?? String(err)}`
+      reloadAccountsFromSQLite()
+    }
+
+    request.log.info({
+      accountId: normalized.row.account_id,
+      bucket: normalized.row.bucket,
+      existing: Boolean(existing),
+      lookupRemote,
+      createIfMissing,
+      tokenPreview: maskSecret(draft.supabaseAccessToken, 6),
+      rtdbSynced,
+    }, 'admin import-json account completed')
+
+    return reply.send({
+      ok: true,
+      action: existing ? 'updated' : 'created',
+      rtdbSynced,
+      warning: warning || undefined,
+      bucketVerification,
+      account: toPublicAccount(normalized.row),
+      preview: {
+        warnings: preview.warnings ?? [],
+        notes: preview.notes ?? [],
+        remote: {
+          attempted: preview.remote?.attempted === true,
+          ok: preview.remote?.ok === true,
+          bucketResolved: preview.remote?.bucketResolved ?? null,
+          bucketCreated: preview.remote?.bucketCreated === true,
+          bucketCount: remoteBuckets.length,
+        },
+      },
     })
   })
 

@@ -1,0 +1,41 @@
+@baseUrl = http://localhost:3000
+@apiKey = test
+@logicalBucket = images
+@objectKey = sample-avatar.png
+
+### 1) Upsert public bucket config
+POST {{baseUrl}}/admin/api/public-buckets
+Content-Type: application/json
+x-api-key: {{apiKey}}
+
+{
+  "bucket": "{{logicalBucket}}",
+  "enabled": true
+}
+
+### 2) List public buckets
+GET {{baseUrl}}/admin/api/public-buckets
+x-api-key: {{apiKey}}
+
+### 3) Upload image (binary)
+# Lưu ý: thay đường dẫn file cho phù hợp máy local của bạn.
+# Sau request này, đọc header `x-s3proxy-direct-url` từ response.
+PUT {{baseUrl}}/{{logicalBucket}}/{{objectKey}}
+x-api-key: {{apiKey}}
+Content-Type: image/png
+
+< ./sample-avatar.png
+
+### 4) Tải trực tiếp từ backend bằng direct link
+# Thay URL bên dưới bằng giá trị nhận được từ header x-s3proxy-direct-url.
+GET https://REPLACE_WITH_VALUE_FROM_X_S3PROXY_DIRECT_URL
+
+### 5) (Tuỳ chọn) Tắt public bucket config
+POST {{baseUrl}}/admin/api/public-buckets
+Content-Type: application/json
+x-api-key: {{apiKey}}
+
+{
+  "bucket": "{{logicalBucket}}",
+  "enabled": false
+}

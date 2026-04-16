@@ -26,7 +26,7 @@ const errorHandler = (await import('../src/plugins/errorHandler.js')).default
 const healthRoutes = (await import('../src/routes/health.js')).default
 const metricsRoutes = (await import('../src/routes/metrics.js')).default
 const s3Routes = (await import('../src/routes/s3.js')).default
-const { db, upsertAccount, getRoute, ROUTE_STATE } = await import('../src/db.js')
+const { db, upsertAccount, upsertPublicBucket, getRoute, ROUTE_STATE } = await import('../src/db.js')
 const { reloadAccountsFromSQLite } = await import('../src/accountPool.js')
 
 let passed = 0
@@ -316,6 +316,25 @@ async function main() {
       ok('PUT /mybucket/path/to/file.txt -> 200, route duoc luu')
     } catch (err) {
       fail('PUT /mybucket/path/to/file.txt', err)
+    }
+
+    try {
+      upsertPublicBucket('mybucket', true)
+      const publicPutRes = await fastify.inject({
+        method: 'PUT',
+        url: '/mybucket/path/public-image.png',
+        headers: authHeaders,
+        payload: 'image-bytes',
+      })
+      assert(publicPutRes.statusCode === 200, `PUT public bucket status=${publicPutRes.statusCode}`)
+      assert(
+        typeof publicPutRes.headers['x-s3proxy-direct-url'] === 'string'
+          && publicPutRes.headers['x-s3proxy-direct-url'].includes('/internal-bucket/mybucket/path/public-image.png'),
+        `missing direct url header: ${publicPutRes.headers['x-s3proxy-direct-url']}`,
+      )
+      ok('PUT vao public bucket -> tra ve x-s3proxy-direct-url tro thang backend bucket')
+    } catch (err) {
+      fail('PUT public bucket direct url header', err)
     }
 
     try {

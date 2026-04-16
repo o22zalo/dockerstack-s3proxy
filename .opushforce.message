@@ -1,0 +1,31 @@
+Đã tuân thủ AGENTS và hoàn tất bổ sung tài liệu + kịch bản test cho luồng public bucket.
+
+Input của user
+- PR trước chưa đạt, cần viết README cho luồng public bucket.
+- Cần file `.http` để test upload image trả về direct link và request đọc nội dung direct link.
+- Hỏi thêm: luồng public có cần cấu hình gì trên bucket S3 không, và khác gì logic bình thường.
+
+Nguyên nhân gốc
+- Chưa có tài liệu vận hành riêng cho tính năng public bucket vừa thêm.
+- Chưa có request mẫu `.http` để đội QA/dev test nhanh end-to-end.
+- Dễ hiểu nhầm rằng bật public bucket ở proxy sẽ tự tạo public link vĩnh viễn dù backend còn private.
+
+Cách đã chỉnh để khắc phục
+- Viết tài liệu chi tiết `services/s3proxy/README.public-buckets.md`:
+  - mô tả flow, API liên quan, lưu ý bảo mật.
+  - giải thích rõ phụ thuộc policy backend S3/Supabase.
+  - phân biệt rõ giữa trả direct URL và quyền public thực sự.
+- Tạo `services/s3proxy/http/public-bucket-flow.http`:
+  - upsert/list public bucket.
+  - upload image và hướng dẫn lấy `x-s3proxy-direct-url`.
+  - request GET direct link để kiểm tra truy cập backend trực tiếp.
+- Cập nhật `README.md` ở root để trỏ đến tài liệu mới.
+
+File đã áp fix bug
+- services/s3proxy/README.public-buckets.md
+- services/s3proxy/http/public-bucket-flow.http
+- README.md
+
+Trả lời câu hỏi "Luồng public này có cần cấu hình gì đối với s3 bucket không?"
+- Có. Phải cấu hình quyền đọc ở backend (public read hoặc cơ chế signed URL riêng).
+- Cờ public bucket ở proxy chỉ thêm direct URL vào response, không tự cấp quyền đọc trên backend.

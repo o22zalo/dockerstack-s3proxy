@@ -15,6 +15,7 @@ import {
   getAccountById,
   getBucket,
   getMultipartUpload,
+  getPublicBucket,
   getRoute,
   listActiveBuckets,
   listVisibleObjectsPage,
@@ -253,6 +254,44 @@ function buildProxyLocation(request, bucket, objectKey) {
   const protocol = request.protocol || 'http'
   const host = request.headers.host || `localhost:${config.PORT}`
   return `${protocol}://${host}/${bucket}/${objectKey}`
+}
+
+function encodeObjectKeyForUrl(objectKey = '') {
+  return String(objectKey)
+    .split('/')
+    .map((segment) => encodeURIComponent(segment))
+    .join('/')
+}
+
+function buildDirectBackendLocation(account, backendKey) {
+  try {
+    const endpoint = new URL(account.endpoint)
+    const keyPath = encodeObjectKeyForUrl(backendKey)
+
+    if ((account.addressing_style ?? 'path') === 'virtual') {
+      return `${endpoint.protocol}//${account.bucket}.${endpoint.host}/${keyPath}`
+    }
+
+    const basePath = endpoint.pathname.replace(/\/+$/, '')
+    return `${endpoint.origin}${basePath}/${encodeURIComponent(account.bucket)}/${keyPath}`
+  } catch {
+    return ''
+  }
+}
+
+function maybeAttachDirectLocation(reply, logicalBucket, account, backendKey) {
+  const publicBucketConfig = getPublicBucket(logicalBucket)
+  const isPublic = Boolean(publicBucketConfig && (publicBucketConfig.enabled === 1 || publicBucketConfig.enabled === true))
+  if (!isPublic) return ''
+
+  const directUrl = buildDirectBackendLocation(account, backendKey)
+  if (!directUrl) return ''
+
+  reply.header('Location', directUrl)
+  reply.header('x-s3proxy-direct-url', directUrl)
+  reply.header('x-s3proxy-direct-backend-bucket', account.bucket)
+  reply.header('x-s3proxy-direct-enabled', 'true')
+  return directUrl
 }
 
 function extractUploadId(xml) {
@@ -767,6 +806,7 @@ export default async function s3Routes(fastify, _opts) {
     await syncCommittedRoute(committed.route, committed.affectedAccounts, request)
 
     metrics.uploadBytesTotal.inc({ account_id: target.account.account_id }, committed.route.size_bytes)
+    maybeAttachDirectLocation(reply, bucket, target.account, target.backendKey)
 
     reply.code(upstream.statusCode)
     return reply.send(await consumeTextBody(upstream))
@@ -1259,7 +1299,9 @@ export default async function s3Routes(fastify, _opts) {
       await syncCommittedRoute(committed.route, committed.affectedAccounts, request)
 
       const etag = backendMetadata.etag ?? upstream.headers.etag?.replace(/"/g, '') ?? nanoid(16)
-      const location = buildProxyLocation(request, bucket, objectKey)
+      const proxyLocation = buildProxyLocation(request, bucket, objectKey)
+      const directLocation = maybeAttachDirectLocation(reply, bucket, account, multipart.backend_key)
+      const location = directLocation || proxyLocation
 
       reply.code(200).header('Content-Type', XML_CONTENT_TYPE)
       return reply.send(buildCompleteMultipartUploadResult(bucket, objectKey, location, etag))
