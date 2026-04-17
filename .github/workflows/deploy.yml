@@ -44,7 +44,7 @@ jobs:
     permissions:
       actions: write
     if: >-
-      (github.event_name == 'workflow_dispatch' && github.repository == 'o861cloudflare/dockerstack-s3proxy')
+      (github.event_name == 'workflow_dispatch')
       ||
       (github.event_name == 'schedule' && github.event.schedule == '3 22 * * *' && github.repository == 'hoaihoa981/dockerstack-s3proxy')
       ||
