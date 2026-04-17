@@ -6,8 +6,6 @@ name: dockerstack-s3proxy
 on:
   workflow_dispatch:
   schedule:
-    - cron: "3 22 * * *" # 05:03 ICT
-    - cron: "3 23 * * *" # 06:03 ICT
     - cron: "3 0 * * *" # 07:03 ICT
     - cron: "3 1 * * *" # 08:03 ICT
     - cron: "3 2 * * *" # 09:03 ICT
@@ -30,6 +28,8 @@ on:
     - cron: "3 19 * * *" # 02:03 ICT
     - cron: "3 20 * * *" # 03:03 ICT
     - cron: "3 21 * * *" # 04:03 ICT
+    - cron: "3 22 * * *" # 05:03 ICT
+    - cron: "3 23 * * *" # 06:03 ICT
 
 env:
   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -45,11 +45,7 @@ jobs:
       actions: write
     if: >-
       (github.event_name == 'workflow_dispatch')
-      ||
-      (github.event_name == 'schedule' && github.event.schedule == '3 22 * * *' && github.repository == 'hoaihoa981/dockerstack-s3proxy')
-      ||
-      (github.event_name == 'schedule' && github.event.schedule == '3 23 * * *' && github.repository == 'hoaihoa981/dockerstack-s3proxy')
-      ||
+      || 
       (github.event_name == 'schedule' && github.event.schedule == '3 0 * * *' && github.repository == 'hoaihoa981/dockerstack-s3proxy')
       ||
       (github.event_name == 'schedule' && github.event.schedule == '3 1 * * *' && github.repository == 'hoaihoa981/dockerstack-s3proxy')
@@ -93,6 +89,10 @@ jobs:
       (github.event_name == 'schedule' && github.event.schedule == '3 20 * * *' && github.repository == 'hoaihoa981/dockerstack-s3proxy')
       ||
       (github.event_name == 'schedule' && github.event.schedule == '3 21 * * *' && github.repository == 'hoaihoa981/dockerstack-s3proxy')
+      ||
+      (github.event_name == 'schedule' && github.event.schedule == '3 22 * * *' && github.repository == 'hoaihoa981/dockerstack-s3proxy')
+      ||
+      (github.event_name == 'schedule' && github.event.schedule == '3 23 * * *' && github.repository == 'hoaihoa981/dockerstack-s3proxy')
     steps:
       - uses: actions/checkout@v6
       - uses: ./.github/runs
