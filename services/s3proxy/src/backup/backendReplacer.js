@@ -16,6 +16,7 @@ import {
   PutObjectCommand,
   DeleteObjectCommand,
 } from '@aws-sdk/client-s3'
+import { metrics } from '../routes/metrics.js'
 
 const stmts = {
   insertMigration: db.prepare(`
@@ -177,6 +178,11 @@ export async function migrateBackendObjects(sourceAccountId, targetAccountId, op
     try {
       if (dryRun) {
         done += 1
+        metrics.migrationObjectsTotal.inc({
+          source_account: sourceAccountId,
+          target_account: targetAccountId,
+          status: 'done',
+        })
         return
       }
 
@@ -189,6 +195,11 @@ export async function migrateBackendObjects(sourceAccountId, targetAccountId, op
           const targetEtag = String(head.ETag || '').replace(/"/g, '')
           if (targetEtag && targetEtag === String(route.etag || '').replace(/"/g, '')) {
             done += 1
+            metrics.migrationObjectsTotal.inc({
+              source_account: sourceAccountId,
+              target_account: targetAccountId,
+              status: 'done',
+            })
             return
           }
         } catch {
@@ -235,9 +246,19 @@ export async function migrateBackendObjects(sourceAccountId, targetAccountId, op
       }
 
       done += 1
+      metrics.migrationObjectsTotal.inc({
+        source_account: sourceAccountId,
+        target_account: targetAccountId,
+        status: 'done',
+      })
       logger.info?.({ migrationId, key: route.backend_key, done, total: routes.length }, 'migrate: object done')
     } catch (err) {
       failed += 1
+      metrics.migrationObjectsTotal.inc({
+        source_account: sourceAccountId,
+        target_account: targetAccountId,
+        status: 'failed',
+      })
       errors.push({ backendKey: route.backend_key, error: err.message })
       logger.error?.({ migrationId, key: route.backend_key, err: err.message }, 'migrate: object failed')
     }

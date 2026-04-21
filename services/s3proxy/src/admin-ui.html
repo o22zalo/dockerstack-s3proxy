@@ -19,6 +19,10 @@
     .card { background: #111a31; border: 1px solid #223156; border-radius: 16px; padding: 16px; margin-bottom: 16px; }
     .actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
     .stack { display: grid; gap: 12px; }
+    .form-row { display: grid; gap: 6px; }
+    .checkbox-group { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+    .checkbox-group label { display: inline-flex; align-items: center; gap: 6px; }
+    .checkbox-group input[type="checkbox"] { width: auto; }
     .meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
     .pill { padding: 10px 12px; background: #17233f; border: 1px solid #273a62; border-radius: 12px; font-size: 13px; }
     .pill b { color: #fff; }
@@ -31,6 +35,8 @@
     button.warn { background: #b45309; }
     button.danger { background: #b91c1c; }
     button.ghost { background: transparent; border: 1px solid #2c3c65; color: #cbd5e1; }
+    button.small, .btn.small { padding: 6px 10px; font-size: 12px; border-radius: 8px; }
+    a.btn { display: inline-block; text-decoration: none; }
     button:disabled { cursor: not-allowed; opacity: 0.6; }
     .button-loading::after { content: '…'; margin-left: 6px; }
     form { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
@@ -41,6 +47,7 @@
     .table-wrap { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
     table { width: 100%; border-collapse: collapse; font-size: 13px; }
     th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid #24355f; vertical-align: top; }
+    progress { width: 100%; }
     th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
     th.sortable:hover { color: #c7d2fe; }
     tr:hover td { background: rgba(37, 99, 235, 0.05); }
@@ -421,25 +428,150 @@
         </div>
       </div>
       <form id="backupForm">
-        <select id="backupDestinationType">
-          <option value="local">local</option>
-          <option value="mock">mock</option>
-          <option value="s3">s3</option>
-        </select>
-        <input id="backupAccountFilter" placeholder="accountFilter CSV (optional)" />
-        <textarea id="backupDestinationConfig" class="span2" placeholder='destinationConfig JSON'>{"rootDir":"/backup-data"}</textarea>
-        <button type="submit" id="backupCreateBtn">Tạo backup job</button>
+        <div class="form-row">
+          <label for="backupDestinationType">Destination</label>
+          <select id="backupDestinationType">
+            <option value="local">local — Local filesystem</option>
+            <option value="s3">s3 — S3-compatible (Supabase, R2, MinIO...)</option>
+            <option value="gdrive">gdrive — Google Drive</option>
+            <option value="onedrive">onedrive — OneDrive / SharePoint</option>
+            <option value="zip">zip — Download ZIP (local file)</option>
+            <option value="mock">mock — Dry-run mock</option>
+          </select>
+        </div>
+
+        <div id="backupConfigFields" class="stack"></div>
+
+        <div class="form-row">
+          <label for="backupAccountFilter">Account filter</label>
+          <input id="backupAccountFilter" placeholder="Để trống = all accounts. Nhập account IDs cách nhau bởi dấu phẩy." />
+        </div>
+
+        <div class="form-row">
+          <label>Options</label>
+          <div class="checkbox-group">
+            <label><input type="checkbox" id="optSkipExisting" checked /> skipExistingByEtag</label>
+            <label><input type="checkbox" id="optIncludeRtdb" /> includeRtdb</label>
+            <label><input type="checkbox" id="optDryRun" /> dryRun (không copy thực)</label>
+          </div>
+        </div>
+
+        <div class="actions">
+          <button type="submit" id="backupCreateBtn">Tạo backup job</button>
+          <button id="backupRefreshBtn" class="secondary" type="button">Refresh jobs</button>
+        </div>
       </form>
-      <div class="actions">
-        <button id="backupRefreshBtn" class="secondary">Refresh jobs</button>
-      </div>
       <div class="table-wrap">
         <table class="responsive-table">
-          <thead><tr><th>Job ID</th><th>Status</th><th>Type</th><th>Progress</th><th>Action</th></tr></thead>
+          <thead><tr><th>Job ID</th><th>Status</th><th>Dest</th><th>Progress</th><th>Created</th><th>Actions</th></tr></thead>
           <tbody id="backupJobsBody"></tbody>
         </table>
       </div>
       <pre id="backupLog">(chưa có dữ liệu backup)</pre>
+    </div>
+
+    <div class="card stack">
+      <div class="section-head">
+        <div>
+          <h2>Backend Health</h2>
+          <div class="sub">Kiểm tra health và diagnose S3 backends. Dùng khi backend gặp sự cố.</div>
+        </div>
+        <div class="actions">
+          <button id="backendHealthRefreshBtn" class="secondary" type="button">Check All</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="responsive-table">
+          <thead><tr>
+            <th>Account ID</th><th>Endpoint</th><th>Health</th><th>Latency</th><th>Actions</th>
+          </tr></thead>
+          <tbody id="backendHealthBody">
+            <tr><td colspan="5" class="hint">Nhấn "Check All" để kiểm tra.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <details id="replaceConfigDetails" style="margin-top:1rem">
+        <summary style="cursor:pointer;font-weight:600">Replace Backend Config</summary>
+        <div class="stack" style="margin-top:0.75rem">
+          <div class="hint">Thay credentials/endpoint mà không copy data. Dùng khi chỉ đổi credentials.</div>
+          <div class="form-row"><label>Account ID</label><input id="replaceSourceAccountId" placeholder="account-id-to-replace" /></div>
+          <div class="form-row"><label>New Endpoint</label><input id="replaceEndpoint" placeholder="https://new.endpoint.example.com/storage/v1/s3" /></div>
+          <div class="form-row"><label>New Access Key ID</label><input id="replaceAccessKeyId" placeholder="new-access-key" /></div>
+          <div class="form-row"><label>New Secret Key</label><input id="replaceSecretKey" type="password" placeholder="new-secret" /></div>
+          <div class="form-row"><label>New Bucket</label><input id="replaceBucket" placeholder="new-bucket-name" /></div>
+          <div class="actions">
+            <button id="replaceConfigDryRunBtn" class="secondary" type="button">Dry Run</button>
+            <button id="replaceConfigBtn" class="danger" type="button">Replace Config</button>
+          </div>
+        </div>
+      </details>
+
+      <details id="migrateDetails" style="margin-top:0.5rem">
+        <summary style="cursor:pointer;font-weight:600">Migrate Objects Between Backends</summary>
+        <div class="stack" style="margin-top:0.75rem">
+          <div class="hint">Copy toàn bộ objects từ source sang target account. Dùng khi backend bị down.</div>
+          <div class="form-row"><label>Source Account ID</label><input id="migrateSource" placeholder="broken-account-id" /></div>
+          <div class="form-row"><label>Target Account ID</label><input id="migrateTarget" placeholder="healthy-account-id" /></div>
+          <div class="form-row">
+            <label>Options</label>
+            <div class="checkbox-group">
+              <label><input type="checkbox" id="migrateSkipExisting" checked /> skipExistingByEtag</label>
+              <label><input type="checkbox" id="migrateDeleteSource" /> deleteSource sau khi copy xong</label>
+            </div>
+          </div>
+          <div class="actions">
+            <button id="migrateDryRunBtn" class="secondary" type="button">Dry Run</button>
+            <button id="migrateBtn" class="danger" type="button">Start Migration</button>
+          </div>
+        </div>
+      </details>
+
+      <pre id="backendHealthLog" style="max-height:200px;overflow-y:auto;">(chưa có kết quả)</pre>
+    </div>
+
+    <div class="card stack">
+      <div class="section-head">
+        <div>
+          <h2>Restore</h2>
+          <div class="sub">Restore objects từ một backup job đã completed.</div>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <label for="restoreSourceJobId">Source Job ID</label>
+        <select id="restoreSourceJobId">
+          <option value="">— Chọn backup job đã completed —</option>
+        </select>
+      </div>
+
+      <div class="form-row">
+        <label>Source destination type</label>
+        <select id="restoreSourceDestType">
+          <option value="local">local</option>
+          <option value="s3">s3</option>
+          <option value="gdrive">gdrive</option>
+          <option value="onedrive">onedrive</option>
+        </select>
+      </div>
+      <div id="restoreSourceConfigFields" class="stack"></div>
+
+      <div class="form-row">
+        <label>Account mapping <span class="hint">(JSON: {"old_id": "new_id"}, để trống = restore vào account gốc)</span></label>
+        <textarea id="restoreAccountMapping" placeholder='{}'>{}</textarea>
+      </div>
+
+      <div class="form-row">
+        <label>Options</label>
+        <div class="checkbox-group">
+          <label><input type="checkbox" id="restoreDryRun" /> dryRun</label>
+          <label><input type="checkbox" id="restoreRebuildRtdb" checked /> rebuildRtdb</label>
+        </div>
+      </div>
+
+      <div class="actions"><button id="restoreStartBtn" class="secondary" type="button">Start Restore</button></div>
+
+      <pre id="restoreLog" style="max-height:250px;overflow-y:auto;">(chưa có kết quả restore)</pre>
     </div>
   </section>
 
@@ -721,6 +853,11 @@ function setActiveTab(tabKey) {
   document.querySelectorAll('.tab-panel').forEach((panel) => {
     panel.classList.toggle('active', panel.id === `tab-${tabKey}`)
   })
+  if (tabKey === 'backup') {
+    loadBackupJobs().catch(() => {})
+    loadCompletedJobsForRestore().catch(() => {})
+    renderDestConfigFields(backupDestinationType?.value || 'local')
+  }
 }
 
 document.querySelectorAll('.tab-btn').forEach((button) => {
@@ -2099,39 +2236,139 @@ testAllBtn.addEventListener('click', async () => {
 const backupForm = document.getElementById('backupForm')
 const backupDestinationType = document.getElementById('backupDestinationType')
 const backupAccountFilter = document.getElementById('backupAccountFilter')
-const backupDestinationConfig = document.getElementById('backupDestinationConfig')
+const backupConfigFields = document.getElementById('backupConfigFields')
 const backupJobsBody = document.getElementById('backupJobsBody')
 const backupLog = document.getElementById('backupLog')
 const backupRefreshBtn = document.getElementById('backupRefreshBtn')
 const backupCreateBtn = document.getElementById('backupCreateBtn')
+const restoreSourceJobId = document.getElementById('restoreSourceJobId')
+const restoreSourceDestType = document.getElementById('restoreSourceDestType')
+const restoreSourceConfigFields = document.getElementById('restoreSourceConfigFields')
+const restoreLog = document.getElementById('restoreLog')
+const backendHealthBody = document.getElementById('backendHealthBody')
+const backendHealthLog = document.getElementById('backendHealthLog')
+const backendHealthRefreshBtn = document.getElementById('backendHealthRefreshBtn')
 
-async function loadBackupJobs() {
+const DEST_CONFIG_TEMPLATES = {
+  local: `<div class="form-row"><label>Root directory</label><input name="rootDir" placeholder="/backup-data" value="/backup-data" /></div>`,
+  s3: `
+    <div class="form-row"><label>Endpoint</label><input name="endpoint" placeholder="https://project.supabase.co/storage/v1/s3" /></div>
+    <div class="form-row"><label>Access Key ID</label><input name="accessKeyId" placeholder="access-key-id" /></div>
+    <div class="form-row"><label>Secret Key</label><input name="secretKey" type="password" placeholder="secret-key" /></div>
+    <div class="form-row"><label>Bucket</label><input name="bucket" placeholder="my-backup-bucket" /></div>
+    <div class="form-row"><label>Region</label><input name="region" placeholder="us-east-1" value="us-east-1" /></div>
+    <div class="form-row"><label>Prefix (optional)</label><input name="prefix" placeholder="daily/" /></div>`,
+  gdrive: `
+    <div class="form-row"><label>Access Token</label><input name="accessToken" type="password" placeholder="ya29.xxx" /></div>
+    <div class="form-row"><label>Folder ID</label><input name="folderId" placeholder="1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs" /></div>`,
+  onedrive: `
+    <div class="form-row"><label>Access Token</label><input name="accessToken" type="password" placeholder="eyJ0..." /></div>
+    <div class="form-row"><label>Folder ID</label><input name="folderId" placeholder="01XXXXX" /></div>
+    <div class="form-row"><label>Drive ID (optional)</label><input name="driveId" placeholder="b!xxx (leave empty for personal drive)" /></div>`,
+  zip: `<div class="hint">ZIP sẽ được lưu vào thư mục tmp trên server. Download sau khi job completed.</div>`,
+  mock: `<div class="hint">Mock destination — không copy object thực. Dùng để test.</div>`,
+}
+
+function renderDestConfigFields(type) {
+  if (!backupConfigFields) return
+  backupConfigFields.innerHTML = DEST_CONFIG_TEMPLATES[type] || ''
+}
+
+function collectDestConfig(type, containerEl = null) {
+  const container = containerEl || backupConfigFields
+  const inputs = container?.querySelectorAll('input[name]') || []
+  const config = {}
+  inputs.forEach((input) => {
+    if (input.value.trim()) config[input.name] = input.value.trim()
+  })
+  return config
+}
+
+backupDestinationType?.addEventListener('change', () => {
+  renderDestConfigFields(backupDestinationType.value)
+})
+renderDestConfigFields(backupDestinationType?.value || 'local')
+
+let backupAutoRefreshInterval = null
+
+function startBackupAutoRefresh() {
+  if (backupAutoRefreshInterval) return
+  backupAutoRefreshInterval = setInterval(() => {
+    loadBackupJobs(true).catch(() => {})
+  }, 3000)
+}
+
+function stopBackupAutoRefresh() {
+  if (!backupAutoRefreshInterval) return
+  clearInterval(backupAutoRefreshInterval)
+  backupAutoRefreshInterval = null
+}
+
+function fmtBytes(bytes) {
+  const b = Number(bytes || 0)
+  if (b === 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  const i = Math.floor(Math.log(b) / Math.log(1024))
+  return `${(b / Math.pow(1024, i)).toFixed(1)} ${units[i]}`
+}
+
+function renderBackupJobs(jobs) {
+  if (!backupJobsBody) return
+  if (!jobs || jobs.length === 0) {
+    backupJobsBody.innerHTML = '<tr><td colspan="6" class="hint">Chưa có backup job nào.</td></tr>'
+    stopBackupAutoRefresh()
+    return
+  }
+
+  const hasRunning = jobs.some((j) => j.status === 'running')
+  if (hasRunning) startBackupAutoRefresh()
+  else stopBackupAutoRefresh()
+
+  backupJobsBody.innerHTML = jobs.map((job) => {
+    const totalObj = Number(job.total_objects || 0)
+    const doneObj = Number(job.done_objects || 0)
+    const pct = job.progress?.percentDone ?? (totalObj > 0 ? Math.round((doneObj / totalObj) * 100) : 0)
+
+    const progressBar = totalObj > 0
+      ? `<progress value="${doneObj}" max="${totalObj}" title="${pct}%"></progress>
+         <span class="hint">${doneObj}/${totalObj} (${pct}%) · ${fmtBytes(job.done_bytes)}/${fmtBytes(job.total_bytes)}</span>`
+      : '<span class="hint">—</span>'
+
+    const isRunning = job.status === 'running'
+    const isPaused = job.status === 'paused'
+    const isCompleted = job.status === 'completed'
+
+    const actions = [
+      isRunning ? `<button class="ghost small" data-job-action="pause" data-job-id="${job.job_id}">Pause</button>` : '',
+      isRunning ? `<button class="ghost small" data-job-action="stop" data-job-id="${job.job_id}">Stop</button>` : '',
+      isPaused ? `<button class="ghost small" data-job-action="resume" data-job-id="${job.job_id}">Resume</button>` : '',
+      job.status === 'failed' ? `<button class="ghost small" data-job-action="resume" data-job-id="${job.job_id}">Retry</button>` : '',
+      isCompleted && job.destination_type === 'zip' ? `<a href="/admin/backup/jobs/${job.job_id}/download" class="ghost small btn" download>Download ZIP</a>` : '',
+      !isRunning ? `<button class="ghost small danger" data-job-action="delete" data-job-id="${job.job_id}">Delete</button>` : '',
+    ].filter(Boolean).join(' ')
+
+    return `<tr>
+      <td data-label="Job ID"><code style="font-size:0.8em">${job.job_id.slice(0, 16)}…</code></td>
+      <td data-label="Status"><span>${job.status}</span></td>
+      <td data-label="Dest">${job.destination_type}</td>
+      <td data-label="Progress">${progressBar}</td>
+      <td data-label="Created">${new Date(job.created_at).toLocaleString()}</td>
+      <td data-label="Actions">${actions}</td>
+    </tr>`
+  }).join('')
+}
+
+async function loadBackupJobs(silent = false) {
+  const release = !silent ? setButtonBusy(backupRefreshBtn, true, 'Refreshing...') : () => {}
   try {
-    const data = await api('/admin/backup/jobs')
-    const jobs = Array.isArray(data.jobs) ? data.jobs : []
-    if (!jobs.length) {
-      backupJobsBody.innerHTML = '<tr><td colspan="5" class="hint">Chưa có backup job.</td></tr>'
-      backupLog.textContent = 'Chưa có backup job.'
-      return
-    }
-    backupJobsBody.innerHTML = jobs.map((job) => {
-      const progress = `${job?.progress?.doneObjects || 0}/${job?.progress?.totalObjects || 0}`
-      return `
-      <tr>
-        <td data-label="Job ID">${job.job_id}</td>
-        <td data-label="Status">${job.status}</td>
-        <td data-label="Type">${job.destination_type}</td>
-        <td data-label="Progress">${progress}</td>
-        <td data-label="Action" class="actions">
-          <button data-job-action="pause" data-job-id="${job.job_id}" class="warn">Pause</button>
-          <button data-job-action="resume" data-job-id="${job.job_id}" class="secondary">Resume</button>
-          <button data-job-action="cancel" data-job-id="${job.job_id}" class="danger">Cancel</button>
-        </td>
-      </tr>`
-    }).join('')
-    backupLog.textContent = JSON.stringify(jobs, null, 2)
+    const data = await api('/admin/backup/jobs?limit=30')
+    const jobs = data.jobs || []
+    renderBackupJobs(jobs)
+    if (!silent) backupLog.textContent = JSON.stringify(jobs.slice(0, 3), null, 2)
   } catch (err) {
-    backupLog.textContent = String(err)
+    if (!silent) backupLog.textContent = String(err)
+  } finally {
+    release()
   }
 }
 
@@ -2139,21 +2376,27 @@ backupForm?.addEventListener('submit', async (event) => {
   event.preventDefault()
   const release = setButtonBusy(backupCreateBtn, true, 'Đang tạo')
   try {
-    const destinationConfig = JSON.parse(backupDestinationConfig.value || '{}')
     const accountFilter = (backupAccountFilter.value || '').split(',').map((v) => v.trim()).filter(Boolean)
+    const destinationType = backupDestinationType.value
+    const destinationConfig = collectDestConfig(destinationType)
     const result = await api('/admin/backup/jobs', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         type: 'full',
-        destinationType: backupDestinationType.value,
+        destinationType,
         destinationConfig,
         accountFilter,
-        options: { skipExistingByEtag: true },
+        options: {
+          skipExistingByEtag: document.getElementById('optSkipExisting').checked,
+          includeRtdb: document.getElementById('optIncludeRtdb').checked,
+          dryRun: document.getElementById('optDryRun').checked,
+        },
       }),
     })
     backupLog.textContent = JSON.stringify(result, null, 2)
     await loadBackupJobs()
+    await loadCompletedJobsForRestore()
   } catch (err) {
     backupLog.textContent = String(err)
   } finally {
@@ -2162,12 +2405,7 @@ backupForm?.addEventListener('submit', async (event) => {
 })
 
 backupRefreshBtn?.addEventListener('click', async () => {
-  const release = setButtonBusy(backupRefreshBtn, true, 'Đang refresh')
-  try {
-    await loadBackupJobs()
-  } finally {
-    release()
-  }
+  await loadBackupJobs()
 })
 
 backupJobsBody?.addEventListener('click', async (event) => {
@@ -2177,11 +2415,206 @@ backupJobsBody?.addEventListener('click', async (event) => {
   const action = button.dataset.jobAction
   if (!jobId || !action) return
   try {
-    const result = await api(`/admin/backup/jobs/${encodeURIComponent(jobId)}/${action}`, { method: 'POST' })
+    const method = action === 'delete' ? 'DELETE' : 'POST'
+    const endpoint = action === 'delete'
+      ? `/admin/backup/jobs/${encodeURIComponent(jobId)}`
+      : `/admin/backup/jobs/${encodeURIComponent(jobId)}/${action}`
+    const result = await api(endpoint, { method })
     backupLog.textContent = JSON.stringify(result, null, 2)
     await loadBackupJobs()
+    await loadCompletedJobsForRestore()
   } catch (err) {
     backupLog.textContent = String(err)
+  }
+})
+
+async function checkAllBackendHealth() {
+  const release = setButtonBusy(backendHealthRefreshBtn, true, 'Checking...')
+  try {
+    const accountsData = await api('/admin/accounts')
+    const accounts = accountsData.accounts || []
+    if (accounts.length === 0) {
+      backendHealthBody.innerHTML = '<tr><td colspan="5" class="hint">Không có account nào.</td></tr>'
+      return
+    }
+
+    backendHealthBody.innerHTML = '<tr><td colspan="5" class="hint">Checking...</td></tr>'
+    const results = await Promise.allSettled(
+      accounts.map((acc) =>
+        api(`/admin/backup/backends/${encodeURIComponent(acc.account_id)}/health`)
+          .then((r) => ({ accountId: acc.account_id, endpoint: acc.endpoint, ...(r.result || {}) }))
+          .catch((err) => ({ accountId: acc.account_id, endpoint: acc.endpoint, ok: false, error: err.message }))
+      )
+    )
+
+    backendHealthBody.innerHTML = results.map((r) => {
+      const d = r.status === 'fulfilled' ? r.value : { accountId: '?', ok: false, error: r.reason?.message }
+      const healthBadge = d.ok
+        ? '<span class="ok">✓ Healthy</span>'
+        : `<span class="bad">✗ ${escapeHtml(d.error || 'Error')}</span>`
+      return `<tr>
+        <td><code>${escapeHtml(d.accountId || '?')}</code></td>
+        <td><span class="hint" style="word-break:break-all">${escapeHtml(d.endpoint || '—')}</span></td>
+        <td>${healthBadge}</td>
+        <td>${d.ok ? `${d.latencyMs}ms` : '—'}</td>
+        <td><button class="ghost small" data-diagnose-account="${escapeHtml(d.accountId || '')}">Diagnose</button></td>
+      </tr>`
+    }).join('')
+  } catch (err) {
+    backendHealthLog.textContent = String(err)
+  } finally {
+    release()
+  }
+}
+
+async function diagnoseAccount(accountId) {
+  backendHealthLog.textContent = `Diagnosing ${accountId}...`
+  try {
+    const result = await api(`/admin/backup/backends/${encodeURIComponent(accountId)}/diagnose`)
+    backendHealthLog.textContent = JSON.stringify(result.result, null, 2)
+  } catch (err) {
+    backendHealthLog.textContent = String(err)
+  }
+}
+
+backendHealthBody?.addEventListener('click', (event) => {
+  const button = event.target.closest('button[data-diagnose-account]')
+  if (!button) return
+  const accountId = button.dataset.diagnoseAccount
+  if (!accountId) return
+  diagnoseAccount(accountId).catch(() => {})
+})
+
+document.getElementById('replaceConfigBtn')?.addEventListener('click', async () => {
+  const accountId = document.getElementById('replaceSourceAccountId').value.trim()
+  if (!accountId) return alert('Nhập Account ID')
+  if (!confirm(`Replace config cho account "${accountId}"?`)) return
+  const newConfig = {
+    endpoint: document.getElementById('replaceEndpoint').value.trim() || undefined,
+    accessKeyId: document.getElementById('replaceAccessKeyId').value.trim() || undefined,
+    secretKey: document.getElementById('replaceSecretKey').value.trim() || undefined,
+    bucket: document.getElementById('replaceBucket').value.trim() || undefined,
+  }
+  Object.keys(newConfig).forEach((k) => newConfig[k] === undefined && delete newConfig[k])
+  try {
+    const result = await api('/admin/backup/backends/replace-config', {
+      method: 'POST',
+      body: { sourceAccountId: accountId, newAccountConfig: newConfig, dryRun: false },
+    })
+    backendHealthLog.textContent = JSON.stringify(result, null, 2)
+  } catch (err) {
+    backendHealthLog.textContent = String(err)
+  }
+})
+
+document.getElementById('replaceConfigDryRunBtn')?.addEventListener('click', async () => {
+  const accountId = document.getElementById('replaceSourceAccountId').value.trim()
+  if (!accountId) return alert('Nhập Account ID')
+  try {
+    const result = await api('/admin/backup/backends/replace-config', {
+      method: 'POST',
+      body: { sourceAccountId: accountId, newAccountConfig: {}, dryRun: true },
+    })
+    backendHealthLog.textContent = JSON.stringify(result, null, 2)
+  } catch (err) {
+    backendHealthLog.textContent = String(err)
+  }
+})
+
+document.getElementById('migrateBtn')?.addEventListener('click', async () => {
+  const source = document.getElementById('migrateSource').value.trim()
+  const target = document.getElementById('migrateTarget').value.trim()
+  if (!source || !target) return alert('Nhập Source và Target account ID')
+  if (!confirm(`Migrate objects từ "${source}" sang "${target}"?`)) return
+  try {
+    const result = await api('/admin/backup/backends/migrate', {
+      method: 'POST',
+      body: {
+        sourceAccountId: source,
+        targetAccountId: target,
+        options: {
+          skipExistingByEtag: document.getElementById('migrateSkipExisting').checked,
+          deleteSource: document.getElementById('migrateDeleteSource').checked,
+          dryRun: false,
+        },
+      },
+    })
+    backendHealthLog.textContent = JSON.stringify(result, null, 2)
+  } catch (err) {
+    backendHealthLog.textContent = String(err)
+  }
+})
+
+document.getElementById('migrateDryRunBtn')?.addEventListener('click', async () => {
+  const source = document.getElementById('migrateSource').value.trim()
+  const target = document.getElementById('migrateTarget').value.trim()
+  if (!source || !target) return alert('Nhập Source và Target account ID')
+  try {
+    const result = await api('/admin/backup/backends/migrate', {
+      method: 'POST',
+      body: { sourceAccountId: source, targetAccountId: target, options: { dryRun: true } },
+    })
+    backendHealthLog.textContent = JSON.stringify(result, null, 2)
+  } catch (err) {
+    backendHealthLog.textContent = String(err)
+  }
+})
+
+backendHealthRefreshBtn?.addEventListener('click', () => {
+  checkAllBackendHealth().catch(() => {})
+})
+
+async function loadCompletedJobsForRestore() {
+  try {
+    const data = await api('/admin/backup/jobs?limit=50&status=completed')
+    const jobs = data.jobs || []
+    restoreSourceJobId.innerHTML = '<option value="">— Chọn backup job —</option>'
+      + jobs.map((j) => `<option value="${j.job_id}">${j.job_id.slice(0,16)}… | ${j.destination_type} | ${j.done_objects} objs | ${new Date(j.created_at).toLocaleDateString()}</option>`).join('')
+  } catch {
+    restoreSourceJobId.innerHTML = '<option value="">— Không tải được danh sách jobs —</option>'
+  }
+}
+
+restoreSourceDestType?.addEventListener('change', () => {
+  restoreSourceConfigFields.innerHTML = DEST_CONFIG_TEMPLATES[restoreSourceDestType.value] || ''
+})
+restoreSourceConfigFields.innerHTML = DEST_CONFIG_TEMPLATES.local
+
+document.getElementById('restoreStartBtn')?.addEventListener('click', async () => {
+  const jobId = restoreSourceJobId.value
+  if (!jobId) return alert('Chọn source job')
+
+  const sourceConfig = collectDestConfig(restoreSourceDestType.value, restoreSourceConfigFields)
+  let accountMapping = {}
+  try {
+    accountMapping = JSON.parse(document.getElementById('restoreAccountMapping').value || '{}')
+  } catch {
+    return alert('Account mapping JSON không hợp lệ')
+  }
+
+  if (!confirm(`Start restore từ job ${jobId}?`)) return
+
+  const restoreStartBtn = document.getElementById('restoreStartBtn')
+  const release = setButtonBusy(restoreStartBtn, true, 'Restoring...')
+  try {
+    const result = await api('/admin/backup/restore', {
+      method: 'POST',
+      body: {
+        sourceJobId: jobId,
+        sourceDestinationType: restoreSourceDestType.value,
+        sourceDestinationConfig: sourceConfig,
+        targetAccountMapping: accountMapping,
+        options: {
+          dryRun: document.getElementById('restoreDryRun').checked,
+          rebuildRtdb: document.getElementById('restoreRebuildRtdb').checked,
+        },
+      },
+    })
+    restoreLog.textContent = JSON.stringify(result, null, 2)
+  } catch (err) {
+    restoreLog.textContent = String(err)
+  } finally {
+    release()
   }
 })
 

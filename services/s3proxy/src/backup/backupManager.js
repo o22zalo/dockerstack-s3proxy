@@ -20,7 +20,7 @@ import {
   touchJobHeartbeat,
   updateJobProgress,
   updateJobStatus,
-  upsertLedgerEntry,
+  batchUpsertLedgerEntries,
   setJobOutputPath,
 } from './backupJournal.js'
 import { createDestination } from './destinations/index.js'
@@ -215,7 +215,15 @@ export async function processBackupJob(job, logger = console) {
     percentDone: 0,
     lastError: null,
   }
-  await updateJobProgress(job.job_id, progress)
+  let lastProgressFlushAt = 0
+  const PROGRESS_FLUSH_INTERVAL_MS = 3000
+  const flushProgressIfNeeded = async (force = false) => {
+    const now = Date.now()
+    if (!force && (now - lastProgressFlushAt) < PROGRESS_FLUSH_INTERVAL_MS) return
+    lastProgressFlushAt = now
+    await updateJobProgress(job.job_id, progress)
+  }
+  await flushProgressIfNeeded(true)
 
   const semaphore = buildSemaphore(Math.max(1, Number(config.BACKUP_CONCURRENCY || 3)))
   const inFlight = new Set()
@@ -278,7 +286,7 @@ export async function processBackupJob(job, logger = console) {
       progress.percentDone = progress.totalObjects > 0
         ? Number((((progress.doneObjects + progress.failedObjects) / progress.totalObjects) * 100).toFixed(2))
         : 0
-      await updateJobProgress(job.job_id, progress)
+      await flushProgressIfNeeded()
     }
 
     for (const account of targetAccounts) {
@@ -290,6 +298,29 @@ export async function processBackupJob(job, logger = console) {
       await scanAccountInventory(account, {
         continuationToken: resumeToken.accountId === account.account_id ? resumeToken.continuationToken : undefined,
         onPage: async ({ objects, nextContinuationToken }) => {
+          const pageEntries = []
+          for (const object of objects) {
+            if (ledgerProcessedKeys.has(`${account.account_id}::${object.backendKey}`)) continue
+            const existingRoute = getRouteByBackendKey(account.account_id, object.backendKey)
+            const encodedKey = existingRoute?.encoded_key || encodeKey(account.bucket, object.backendKey)
+            for (const destination of destinations) {
+              pageEntries.push({
+                job_id: job.job_id,
+                account_id: account.account_id,
+                backend_bucket: account.bucket,
+                backend_key: object.backendKey,
+                encoded_key: encodedKey,
+                destination_type: destination.type,
+                status: 'pending',
+                src_etag: object.etag,
+                src_size_bytes: object.sizeBytes,
+              })
+            }
+          }
+          if (pageEntries.length > 0) {
+            batchUpsertLedgerEntries(pageEntries)
+          }
+
           for (const object of objects) {
             if (abortController.signal.aborted) break
             if (await shouldStopFromDb()) {
@@ -308,17 +339,6 @@ export async function processBackupJob(job, logger = console) {
               progress.currentAccountId = account.account_id
               progress.currentKey = object.backendKey
               for (const destination of destinations) {
-                upsertLedgerEntry({
-                  job_id: job.job_id,
-                  account_id: account.account_id,
-                  backend_bucket: account.bucket,
-                  backend_key: object.backendKey,
-                  encoded_key: encodeKey(account.bucket, object.backendKey),
-                  destination_type: destination.type,
-                  status: 'pending',
-                  src_etag: object.etag,
-                  src_size_bytes: object.sizeBytes,
-                })
                 markLedgerSkipped({
                   job_id: job.job_id,
                   account_id: account.account_id,
@@ -341,7 +361,7 @@ export async function processBackupJob(job, logger = console) {
               progress.percentDone = progress.totalObjects > 0
                 ? Number((((progress.doneObjects + progress.failedObjects) / progress.totalObjects) * 100).toFixed(2))
                 : 0
-              await updateJobProgress(job.job_id, progress)
+              await flushProgressIfNeeded()
               continue
             }
 
@@ -362,18 +382,6 @@ export async function processBackupJob(job, logger = console) {
                 let hasFailedDestination = false
                 let hasDoneDestination = false
                 for (const destination of destinations) {
-                  upsertLedgerEntry({
-                    job_id: job.job_id,
-                    account_id: account.account_id,
-                    backend_bucket: account.bucket,
-                    backend_key: object.backendKey,
-                    encoded_key: encodedKey,
-                    destination_type: destination.type,
-                    status: 'pending',
-                    src_etag: object.etag,
-                    src_size_bytes: object.sizeBytes,
-                  })
-
                   const result = await copyObjectToDestination({
                     account,
                     backendKey: object.backendKey,
@@ -406,7 +414,7 @@ export async function processBackupJob(job, logger = console) {
                 progress.percentDone = progress.totalObjects > 0
                   ? Number((((progress.doneObjects + progress.failedObjects) / progress.totalObjects) * 100).toFixed(2))
                   : 0
-                await updateJobProgress(job.job_id, progress)
+                await flushProgressIfNeeded()
                 semaphore.release()
               }
             })()
@@ -425,6 +433,7 @@ export async function processBackupJob(job, logger = console) {
               lastKey: objects.at(-1)?.backendKey || null,
             },
           })
+          await flushProgressIfNeeded(true)
         },
       })
 
@@ -465,7 +474,7 @@ export async function processBackupJob(job, logger = console) {
     progress.failedObjects += 1
     metrics.backupObjectsTotal.inc({ status: 'failed', destination_type: destinationType })
     progress.lastError = err.message
-    await updateJobProgress(job.job_id, progress)
+    await flushProgressIfNeeded(true)
     await updateJobStatus(job.job_id, 'failed', {
       completedAt: Date.now(),
       lastError: err.message,
@@ -479,7 +488,7 @@ export async function processBackupJob(job, logger = console) {
     clearInterval(heartbeatTimer)
   }
 
-  await updateJobProgress(job.job_id, progress)
+  await flushProgressIfNeeded(true)
 
   if (abortController.signal.aborted) {
     const latest = getJobById(job.job_id)

@@ -48,6 +48,20 @@ function sanitizeJob(job) {
 
 export default async function backupRoutes(fastify) {
   fastify.addHook('preHandler', fastify.authenticate)
+  fastify.addHook('preHandler', async (request, reply) => {
+    if (config.BACKUP_ENABLED) return
+    const routePath = request.routerPath || request.routeOptions?.url || ''
+    const urlPath = String(request.url || '').split('?')[0]
+    const allowedWhenDisabled = ['/admin/backup/config']
+    if (allowedWhenDisabled.includes(routePath) || allowedWhenDisabled.includes(urlPath)) return
+
+    return reply.code(503).send({
+      ok: false,
+      error: 'BACKUP_DISABLED',
+      message: 'Backup system is disabled. Set BACKUP_ENABLED=true to enable.',
+      configEndpoint: '/admin/backup/config',
+    })
+  })
 
   fastify.get('/admin/backup/jobs', async (request, reply) => {
     const limit = Number(request.query.limit || 20)

@@ -321,7 +321,9 @@ db.exec(`
   DROP INDEX IF EXISTS idx_backup_ledger_job_backend;
   CREATE UNIQUE INDEX IF NOT EXISTS idx_backup_ledger_job_account_backend_dest ON backup_ledger(job_id, account_id, backend_key, destination_type);
   CREATE INDEX IF NOT EXISTS idx_backup_ledger_job_status ON backup_ledger(job_id, status);
+  CREATE INDEX IF NOT EXISTS idx_backup_ledger_job_status_id ON backup_ledger(job_id, status, id);
   CREATE INDEX IF NOT EXISTS idx_backup_jobs_status_created ON backup_jobs(status, created_at);
+  CREATE INDEX IF NOT EXISTS idx_backend_migrations_created ON backend_migrations(created_at DESC);
   CREATE INDEX IF NOT EXISTS idx_mig_ledger_status ON backend_migration_ledger(migration_id, status);
 `)
 
