@@ -172,6 +172,8 @@ db.exec(`
     done_bytes      INTEGER NOT NULL DEFAULT 0,
     last_error      TEXT,
     resume_token    TEXT,
+    running_instance_id TEXT,
+    running_heartbeat_at INTEGER,
     options_json    TEXT NOT NULL DEFAULT '{}'
   );
 
@@ -250,6 +252,8 @@ ensureColumn('buckets', 'updated_at', 'updated_at INTEGER NOT NULL DEFAULT 0')
 ensureColumn('buckets', 'deleted_at', 'deleted_at INTEGER')
 ensureColumn('buckets', 'versioning_status', "versioning_status TEXT NOT NULL DEFAULT ''")
 ensureColumn('backup_ledger', 'destination_type', "destination_type TEXT NOT NULL DEFAULT 'local'")
+ensureColumn('backup_jobs', 'running_instance_id', 'running_instance_id TEXT')
+ensureColumn('backup_jobs', 'running_heartbeat_at', 'running_heartbeat_at INTEGER')
 
 db.exec(`
   UPDATE routes

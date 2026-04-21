@@ -28,7 +28,7 @@ export class LocalDestination {
     return existsSync(join(this.rootDir, this.prefix, key))
   }
 
-  async * listKeys(_prefix = '') {
+  async * listKeys(prefix = '') {
     const baseDir = join(this.rootDir, this.prefix)
     const walk = (dir, relativeRoot = '') => {
       const entries = readdirSync(dir, { withFileTypes: true })
@@ -46,6 +46,7 @@ export class LocalDestination {
     }
     if (!existsSync(baseDir)) return
     for (const key of walk(baseDir)) {
+      if (prefix && !key.startsWith(prefix)) continue
       yield { key, etag: '', size: statSync(join(baseDir, key)).size }
     }
   }

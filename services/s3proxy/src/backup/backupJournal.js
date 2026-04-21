@@ -23,7 +23,15 @@ const stmts = {
         started_at=@started_at,
         completed_at=@completed_at,
         last_error=@last_error,
-        resume_token=@resume_token
+        resume_token=@resume_token,
+        running_instance_id=@running_instance_id,
+        running_heartbeat_at=@running_heartbeat_at
+    WHERE job_id=@job_id
+  `),
+  touchJobHeartbeat: db.prepare(`
+    UPDATE backup_jobs
+    SET running_instance_id=@running_instance_id,
+        running_heartbeat_at=@running_heartbeat_at
     WHERE job_id=@job_id
   `),
   updateJobProgress: db.prepare(`
@@ -173,6 +181,12 @@ export async function updateJobStatus(jobId, status, extras = {}) {
   const resumeToken = Object.prototype.hasOwnProperty.call(extras, 'resumeToken')
     ? (extras.resumeToken === null ? null : JSON.stringify(extras.resumeToken))
     : current?.resume_token ?? null
+  const runningInstanceId = Object.prototype.hasOwnProperty.call(extras, 'runningInstanceId')
+    ? extras.runningInstanceId
+    : current?.running_instance_id ?? null
+  const runningHeartbeatAt = Object.prototype.hasOwnProperty.call(extras, 'runningHeartbeatAt')
+    ? extras.runningHeartbeatAt
+    : current?.running_heartbeat_at ?? null
   stmts.updateJobStatus.run({
     job_id: jobId,
     status,
@@ -180,6 +194,8 @@ export async function updateJobStatus(jobId, status, extras = {}) {
     completed_at: completedAt,
     last_error: lastError,
     resume_token: resumeToken,
+    running_instance_id: runningInstanceId,
+    running_heartbeat_at: runningHeartbeatAt,
   })
   await backupRtdbPatch(`jobs/${jobId}`, {
     status,
@@ -225,6 +241,13 @@ export function upsertLedgerEntry(entry) { stmts.upsertLedger.run(entry) }
 export function markLedgerDone(entry) { stmts.markLedgerDone.run(entry) }
 export function markLedgerFailed(entry) { stmts.markLedgerFailed.run(entry) }
 export function markLedgerSkipped(entry) { stmts.markLedgerSkipped.run(entry) }
+export function touchJobHeartbeat(jobId, { instanceId, heartbeatAt = Date.now() } = {}) {
+  stmts.touchJobHeartbeat.run({
+    job_id: jobId,
+    running_instance_id: instanceId ?? null,
+    running_heartbeat_at: heartbeatAt,
+  })
+}
 export function getPendingLedgerEntries(jobId, { limit = 100, afterId = 0 } = {}) {
   return stmts.getPendingLedgerEntries.all({ job_id: jobId, limit, after_id: afterId })
 }

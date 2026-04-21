@@ -13,6 +13,8 @@ import {
   getRunningJob,
   listLedgerEntries,
   listJobs,
+  markLedgerSkipped,
+  touchJobHeartbeat,
   updateJobProgress,
   updateJobStatus,
   upsertLedgerEntry,
@@ -127,7 +129,9 @@ export function listBackupJobLedger(jobId, options = {}) {
 
 export function removeBackupJob(jobId) {
   const persisted = getJobById(jobId)
-  if (activeJobs.has(jobId) || persisted?.status === 'running') {
+  const heartbeatFresh = persisted?.running_heartbeat_at
+    && (Date.now() - Number(persisted.running_heartbeat_at) < 15_000)
+  if (activeJobs.has(jobId) || persisted?.status === 'running' || heartbeatFresh) {
     throw new Error('job_is_running')
   }
   deleteJobById(jobId)
@@ -138,7 +142,11 @@ export async function processBackupJob(job, logger = console) {
 
   const abortController = new AbortController()
   activeJobs.set(job.job_id, { abortController })
-  await updateJobStatus(job.job_id, 'running', { startedAt: Date.now() })
+  await updateJobStatus(job.job_id, 'running', {
+    startedAt: Date.now(),
+    runningInstanceId: config.INSTANCE_ID,
+    runningHeartbeatAt: Date.now(),
+  })
 
   const accountFilter = new Set(job.account_filter || [])
   let resumeToken = {}
@@ -194,11 +202,13 @@ export async function processBackupJob(job, logger = console) {
       .catch(() => {})
   }, 1000)
   statusPollTimer.unref?.()
+  const heartbeatTimer = setInterval(() => {
+    touchJobHeartbeat(job.job_id, { instanceId: config.INSTANCE_ID, heartbeatAt: Date.now() })
+  }, 2000)
+  heartbeatTimer.unref?.()
 
   try {
-    const ledgerSeed = (job.status === 'paused' || job.status === 'failed')
-      ? getPendingLedgerEntries(job.job_id, { limit: 2000, afterId: 0 })
-      : []
+    const ledgerSeed = getPendingLedgerEntries(job.job_id, { limit: 2000, afterId: 0 })
     const ledgerProcessedKeys = new Set()
     for (const entry of ledgerSeed) {
       if (abortController.signal.aborted) break
@@ -260,6 +270,35 @@ export async function processBackupJob(job, logger = console) {
               if (object.backendKey <= resumeToken.lastKey) continue
             }
             if ((Number(object.sizeBytes) || 0) > maxObjectSizeBytes) {
+              progress.totalObjects += 1
+              progress.currentAccountId = account.account_id
+              progress.currentKey = object.backendKey
+              for (const destination of destinations) {
+                upsertLedgerEntry({
+                  job_id: job.job_id,
+                  account_id: account.account_id,
+                  backend_bucket: account.bucket,
+                  backend_key: object.backendKey,
+                  encoded_key: encodeKey(account.bucket, object.backendKey),
+                  destination_type: destination.type,
+                  status: 'pending',
+                  src_etag: object.etag,
+                  src_size_bytes: object.sizeBytes,
+                })
+                markLedgerSkipped({
+                  job_id: job.job_id,
+                  account_id: account.account_id,
+                  backend_key: object.backendKey,
+                  destination_type: destination.type,
+                  error: `object_too_large:${object.sizeBytes}`,
+                  completed_at: Date.now(),
+                })
+              }
+              progress.doneObjects += 1
+              progress.percentDone = progress.totalObjects > 0
+                ? Number((((progress.doneObjects + progress.failedObjects) / progress.totalObjects) * 100).toFixed(2))
+                : 0
+              await updateJobProgress(job.job_id, progress)
               continue
             }
 
@@ -374,11 +413,17 @@ export async function processBackupJob(job, logger = console) {
     progress.failedObjects += 1
     progress.lastError = err.message
     await updateJobProgress(job.job_id, progress)
-    await updateJobStatus(job.job_id, 'failed', { completedAt: Date.now(), lastError: err.message })
+    await updateJobStatus(job.job_id, 'failed', {
+      completedAt: Date.now(),
+      lastError: err.message,
+      runningInstanceId: null,
+      runningHeartbeatAt: null,
+    })
     activeJobs.delete(job.job_id)
     return getJobById(job.job_id)
   } finally {
     clearInterval(statusPollTimer)
+    clearInterval(heartbeatTimer)
   }
 
   await updateJobProgress(job.job_id, progress)
@@ -386,17 +431,42 @@ export async function processBackupJob(job, logger = console) {
   if (abortController.signal.aborted) {
     const latest = getJobById(job.job_id)
     if (latest?.status === 'paused') {
-      await updateJobStatus(job.job_id, 'paused', { lastError: latest.last_error ?? 'paused_by_user' })
+      await updateJobStatus(job.job_id, 'paused', {
+        lastError: latest.last_error ?? 'paused_by_user',
+        runningInstanceId: null,
+        runningHeartbeatAt: null,
+      })
     } else if (latest?.status === 'cancelled') {
-      await updateJobStatus(job.job_id, 'cancelled', { completedAt: Date.now(), lastError: latest.last_error ?? 'cancelled' })
+      await updateJobStatus(job.job_id, 'cancelled', {
+        completedAt: Date.now(),
+        lastError: latest.last_error ?? 'cancelled',
+        runningInstanceId: null,
+        runningHeartbeatAt: null,
+      })
     } else {
-      await updateJobStatus(job.job_id, 'cancelled', { completedAt: Date.now(), lastError: 'cancelled' })
+      await updateJobStatus(job.job_id, 'cancelled', {
+        completedAt: Date.now(),
+        lastError: 'cancelled',
+        runningInstanceId: null,
+        runningHeartbeatAt: null,
+      })
     }
   } else if (progress.failedObjects > 0) {
-    await updateJobStatus(job.job_id, 'failed', { completedAt: Date.now(), lastError: progress.lastError || 'some objects failed' })
+    await updateJobStatus(job.job_id, 'failed', {
+      completedAt: Date.now(),
+      lastError: progress.lastError || 'some objects failed',
+      runningInstanceId: null,
+      runningHeartbeatAt: null,
+    })
   } else {
-    await updateJobStatus(job.job_id, 'completed', { completedAt: Date.now() })
+    await updateJobStatus(job.job_id, 'completed', {
+      completedAt: Date.now(),
+      runningInstanceId: null,
+      runningHeartbeatAt: null,
+    })
   }
+
+  touchJobHeartbeat(job.job_id, { instanceId: null, heartbeatAt: null })
 
   activeJobs.delete(job.job_id)
   return getJobById(job.job_id)
