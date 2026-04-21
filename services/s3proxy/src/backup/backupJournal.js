@@ -1,0 +1,179 @@
+import { randomUUID } from 'crypto'
+import { db } from '../db.js'
+import { backupRtdbPatch, backupRtdbSet } from './backupFirebase.js'
+
+const stmts = {
+  createJob: db.prepare(`
+    INSERT INTO backup_jobs (
+      job_id, type, status, created_at, destination_type, destination_config_json,
+      account_filter_json, options_json
+    ) VALUES (
+      @job_id, @type, @status, @created_at, @destination_type, @destination_config_json,
+      @account_filter_json, @options_json
+    )
+  `),
+  updateJobStatus: db.prepare(`
+    UPDATE backup_jobs
+    SET status=@status,
+        started_at=COALESCE(@started_at, started_at),
+        completed_at=COALESCE(@completed_at, completed_at),
+        last_error=COALESCE(@last_error, last_error),
+        resume_token=COALESCE(@resume_token, resume_token)
+    WHERE job_id=@job_id
+  `),
+  updateJobProgress: db.prepare(`
+    UPDATE backup_jobs
+    SET total_objects=@total_objects,
+        done_objects=@done_objects,
+        failed_objects=@failed_objects,
+        total_bytes=@total_bytes,
+        done_bytes=@done_bytes,
+        last_error=@last_error
+    WHERE job_id=@job_id
+  `),
+  getJobById: db.prepare('SELECT * FROM backup_jobs WHERE job_id = ?'),
+  getRunningJob: db.prepare("SELECT * FROM backup_jobs WHERE status='running' ORDER BY created_at ASC LIMIT 1"),
+  getPendingJob: db.prepare("SELECT * FROM backup_jobs WHERE status='pending' ORDER BY created_at ASC LIMIT 1"),
+  listJobs: db.prepare('SELECT * FROM backup_jobs ORDER BY created_at DESC LIMIT @limit OFFSET @offset'),
+  listJobsByStatus: db.prepare('SELECT * FROM backup_jobs WHERE status=@status ORDER BY created_at DESC LIMIT @limit OFFSET @offset'),
+  upsertLedger: db.prepare(`
+    INSERT INTO backup_ledger (
+      job_id, account_id, backend_bucket, backend_key, encoded_key, status,
+      src_etag, src_size_bytes
+    ) VALUES (
+      @job_id, @account_id, @backend_bucket, @backend_key, @encoded_key, @status,
+      @src_etag, @src_size_bytes
+    )
+    ON CONFLICT(job_id, backend_key) DO UPDATE SET
+      status=excluded.status,
+      src_etag=COALESCE(excluded.src_etag, backup_ledger.src_etag),
+      src_size_bytes=COALESCE(excluded.src_size_bytes, backup_ledger.src_size_bytes)
+  `),
+  markLedgerDone: db.prepare(`
+    UPDATE backup_ledger
+    SET status='done',
+        dst_key=@dst_key,
+        dst_location=@dst_location,
+        completed_at=@completed_at,
+        error=NULL
+    WHERE job_id=@job_id AND backend_key=@backend_key
+  `),
+  markLedgerFailed: db.prepare(`
+    UPDATE backup_ledger
+    SET status='failed',
+        error=@error,
+        attempt_count=@attempt_count,
+        last_attempt_at=@last_attempt_at
+    WHERE job_id=@job_id AND backend_key=@backend_key
+  `),
+  getPendingLedgerEntries: db.prepare(`
+    SELECT * FROM backup_ledger
+    WHERE job_id=@job_id AND status IN ('pending','failed') AND id > @after_id
+    ORDER BY id ASC
+    LIMIT @limit
+  `),
+  findLedgerByEtag: db.prepare(`
+    SELECT * FROM backup_ledger
+    WHERE job_id=@job_id AND account_id=@account_id AND backend_key=@backend_key AND src_etag=@etag AND status='done'
+    LIMIT 1
+  `),
+}
+
+function parseJson(value, fallback) {
+  try {
+    return value ? JSON.parse(value) : fallback
+  } catch {
+    return fallback
+  }
+}
+
+function normalizeJob(row) {
+  if (!row) return null
+  return {
+    ...row,
+    destination_config: parseJson(row.destination_config_json, {}),
+    account_filter: parseJson(row.account_filter_json, []),
+    options: parseJson(row.options_json, {}),
+    progress: {
+      totalObjects: row.total_objects,
+      doneObjects: row.done_objects,
+      failedObjects: row.failed_objects,
+      totalBytes: row.total_bytes,
+      doneBytes: row.done_bytes,
+    },
+  }
+}
+
+export async function createBackupJob({ type = 'full', destinationType, destinationConfig = {}, accountFilter = [], options = {} }) {
+  const jobId = `job_${randomUUID()}`
+  const createdAt = Date.now()
+  stmts.createJob.run({
+    job_id: jobId,
+    type,
+    status: 'pending',
+    created_at: createdAt,
+    destination_type: destinationType,
+    destination_config_json: JSON.stringify(destinationConfig ?? {}),
+    account_filter_json: JSON.stringify(accountFilter ?? []),
+    options_json: JSON.stringify(options ?? {}),
+  })
+
+  await backupRtdbSet(`backup/jobs/${jobId}`, {
+    status: 'pending',
+    type,
+    createdAt,
+    destinationType,
+    progress: { totalObjects: 0, doneObjects: 0, failedObjects: 0, totalBytes: 0, doneBytes: 0 },
+  })
+
+  return getJobById(jobId)
+}
+
+export async function updateJobStatus(jobId, status, extras = {}) {
+  stmts.updateJobStatus.run({
+    job_id: jobId,
+    status,
+    started_at: extras.startedAt ?? null,
+    completed_at: extras.completedAt ?? null,
+    last_error: extras.lastError ?? null,
+    resume_token: extras.resumeToken ? JSON.stringify(extras.resumeToken) : null,
+  })
+  await backupRtdbPatch(`backup/jobs/${jobId}`, {
+    status,
+    startedAt: extras.startedAt,
+    completedAt: extras.completedAt,
+    lastError: extras.lastError ?? null,
+  })
+}
+
+export async function updateJobProgress(jobId, progress) {
+  stmts.updateJobProgress.run({
+    job_id: jobId,
+    total_objects: progress.totalObjects ?? 0,
+    done_objects: progress.doneObjects ?? 0,
+    failed_objects: progress.failedObjects ?? 0,
+    total_bytes: progress.totalBytes ?? 0,
+    done_bytes: progress.doneBytes ?? 0,
+    last_error: progress.lastError ?? null,
+  })
+  await backupRtdbPatch(`backup/jobs/${jobId}/progress`, progress)
+}
+
+export function upsertLedgerEntry(entry) { stmts.upsertLedger.run(entry) }
+export function markLedgerDone(entry) { stmts.markLedgerDone.run(entry) }
+export function markLedgerFailed(entry) { stmts.markLedgerFailed.run(entry) }
+export function getPendingLedgerEntries(jobId, { limit = 100, afterId = 0 } = {}) {
+  return stmts.getPendingLedgerEntries.all({ job_id: jobId, limit, after_id: afterId })
+}
+export function findLedgerByEtag(jobId, accountId, backendKey, etag) {
+  return stmts.findLedgerByEtag.get({ job_id: jobId, account_id: accountId, backend_key: backendKey, etag })
+}
+export function getRunningJob() { return normalizeJob(stmts.getRunningJob.get()) }
+export function getPendingJob() { return normalizeJob(stmts.getPendingJob.get()) }
+export function getJobById(jobId) { return normalizeJob(stmts.getJobById.get(jobId)) }
+export function listJobs({ limit = 20, offset = 0, status } = {}) {
+  const rows = status
+    ? stmts.listJobsByStatus.all({ status, limit, offset })
+    : stmts.listJobs.all({ limit, offset })
+  return rows.map(normalizeJob)
+}

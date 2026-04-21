@@ -199,6 +199,10 @@ if [ "${ENABLE_TAILSCALE:-false}" = "true" ]; then
   fi
 fi
 
+if [ "${BACKUP_SYSTEM_ENABLE:-false}" = "true" ]; then
+  PROFILE_ARGS+=(--profile backup-worker)
+fi
+
 if [ "${ENABLE_TAILSCALE:-false}" = "true" ] && should_render_tailscale_serve "${1:-}"; then
   render_tailscale_serve_config
 fi

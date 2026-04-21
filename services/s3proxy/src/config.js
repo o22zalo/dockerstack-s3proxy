@@ -138,6 +138,11 @@ const config = Object.freeze({
   CRON_KEEPALIVE_PREFIX: optionalEnv("CRON_KEEPALIVE_PREFIX", "_s3proxy_keepalive"),
   CRON_KEEPALIVE_CONTENT_PREFIX: optionalEnv("CRON_KEEPALIVE_CONTENT_PREFIX", "s3proxy-keepalive"),
   ADMIN_TEST_PREFIX: optionalEnv("ADMIN_TEST_PREFIX", "_s3proxy_probe"),
+  BACKUP_ENABLED: optionalBool("BACKUP_ENABLED", false),
+  BACKUP_RTDB_URL: optionalEnv("BACKUP_RTDB_URL", ""),
+  BACKUP_CONCURRENCY: optionalInt("BACKUP_CONCURRENCY", 3),
+  BACKUP_CHUNK_STREAM_MS: optionalInt("BACKUP_CHUNK_STREAM_MS", 50),
+  BACKUP_MAX_OBJECT_SIZE_MB: optionalInt("BACKUP_MAX_OBJECT_SIZE_MB", 512),
 });
 
 export default config;

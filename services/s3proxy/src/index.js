@@ -38,6 +38,7 @@ import accountRoutes from './routes/accounts.js'
 import adminRoutes from './routes/admin.js'
 import publicBucketProxyRoutes from './routes/publicBucketProxy.js'
 import s3Routes from './routes/s3.js'
+import backupRoutes from './routes/backup.js'
 
 const log = pino({
   level: config.LOG_LEVEL,
@@ -302,6 +303,7 @@ async function bootstrap() {
   await fastify.register(accountRoutes)
   await fastify.register(adminRoutes)
   await fastify.register(publicBucketProxyRoutes)
+  await fastify.register(backupRoutes)
   await fastify.register(s3Routes, { prefix: '/' })
 
   fastify.addHook('onSend', async (_request, reply) => {

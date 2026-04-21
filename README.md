@@ -38,6 +38,13 @@ npm run dockerapp-exec:down
 npm run s3proxy:test
 ```
 
+## Backup worker tách riêng container
+
+- Bật/tắt worker riêng bằng biến `.env`: `BACKUP_SYSTEM_ENABLE=true|false`.
+- `true`: `dc.sh` tự thêm profile `backup-worker` và start service `backup-worker`.
+- `false`: chỉ chạy `app` như hiện tại, không xử lý queue backup nền.
+- API quản trị backup (tại app): `POST /admin/backup/jobs`, `GET /admin/backup/jobs`.
+
 ## Tiện ích clone template cho dịch vụ mới
 
 Đã thêm script NodeJS:

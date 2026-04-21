@@ -154,6 +154,44 @@ db.exec(`
     created_at   INTEGER NOT NULL,
     updated_at   INTEGER NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS backup_jobs (
+    job_id          TEXT PRIMARY KEY,
+    type            TEXT NOT NULL DEFAULT 'full',
+    status          TEXT NOT NULL DEFAULT 'pending',
+    created_at      INTEGER NOT NULL,
+    started_at      INTEGER,
+    completed_at    INTEGER,
+    destination_type TEXT NOT NULL,
+    destination_config_json TEXT NOT NULL DEFAULT '{}',
+    account_filter_json TEXT NOT NULL DEFAULT '[]',
+    total_objects   INTEGER NOT NULL DEFAULT 0,
+    done_objects    INTEGER NOT NULL DEFAULT 0,
+    failed_objects  INTEGER NOT NULL DEFAULT 0,
+    total_bytes     INTEGER NOT NULL DEFAULT 0,
+    done_bytes      INTEGER NOT NULL DEFAULT 0,
+    last_error      TEXT,
+    resume_token    TEXT,
+    options_json    TEXT NOT NULL DEFAULT '{}'
+  );
+
+  CREATE TABLE IF NOT EXISTS backup_ledger (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id          TEXT NOT NULL REFERENCES backup_jobs(job_id),
+    account_id      TEXT NOT NULL,
+    backend_bucket  TEXT NOT NULL,
+    backend_key     TEXT NOT NULL,
+    encoded_key     TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'pending',
+    src_etag        TEXT,
+    src_size_bytes  INTEGER,
+    dst_key         TEXT,
+    dst_location    TEXT,
+    attempt_count   INTEGER NOT NULL DEFAULT 0,
+    last_attempt_at INTEGER,
+    error           TEXT,
+    completed_at    INTEGER
+  );
 `)
 
 ensureColumn('routes', 'backend_key', "backend_key TEXT NOT NULL DEFAULT ''")
@@ -245,6 +283,9 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_accounts_public_active ON accounts(public_bucket, active, used_bytes);
   CREATE INDEX IF NOT EXISTS idx_buckets_deleted ON buckets(deleted_at, bucket);
   CREATE INDEX IF NOT EXISTS idx_cron_jobs_enabled ON cron_jobs(enabled, updated_at);
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_backup_ledger_job_backend ON backup_ledger(job_id, backend_key);
+  CREATE INDEX IF NOT EXISTS idx_backup_ledger_job_status ON backup_ledger(job_id, status);
+  CREATE INDEX IF NOT EXISTS idx_backup_jobs_status_created ON backup_jobs(status, created_at);
 `)
 
 function isUsageCounted(route) {
