@@ -11,12 +11,18 @@ function buildUrl(path) {
   if (!root) return null
 
   const normalized = normalizePath(path)
-  const [baseWithoutQuery, query = ''] = root.split('?')
-  const cleanBase = baseWithoutQuery.replace(/\/$/, '')
+  const url = new URL(root)
+  const queryText = url.search || ''
+  const rawPath = url.pathname.replace(/\/+$/, '')
+  const basePath = rawPath.endsWith('.json')
+    ? rawPath.slice(0, -5)
+    : rawPath
 
-  const suffix = normalized ? `/${normalized}` : ''
-  const queryText = query ? `?${query}` : ''
-  return `${cleanBase}${suffix}.json${queryText}`
+  const relativePath = normalized
+    ? `${basePath}/${normalized}`.replace(/\/{2,}/g, '/')
+    : basePath
+
+  return `${url.origin}${relativePath}.json${queryText}`
 }
 
 export async function backupRtdbPatch(path, value) {

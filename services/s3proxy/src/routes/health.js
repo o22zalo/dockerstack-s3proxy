@@ -6,6 +6,7 @@
 import { getAccountsStats } from '../accountPool.js'
 import { countRoutes } from '../db.js'
 import { cacheSize } from '../cache.js'
+import config from '../config.js'
 
 let _rtdbState = { connected: false, listenerActive: false }
 
@@ -59,6 +60,10 @@ export default async function healthRoutes(fastify, _opts) {
         totalBytes: accountStats.totalBytes,
         usedBytes: accountStats.usedBytes,
         percentUsed,
+      },
+      backup: {
+        enabled: config.BACKUP_ENABLED,
+        backupRtdbConfigured: Boolean(config.BACKUP_RTDB_URL),
       },
     })
   })

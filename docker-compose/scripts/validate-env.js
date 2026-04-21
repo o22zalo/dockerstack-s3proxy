@@ -157,9 +157,22 @@ for (const key of [
 ]) {
   checkOptional(key, "s3proxy tuning value");
 }
+checkOptional("S3PROXY_BACKUP_RTDB_URL", "backup RTDB URL (separate Firebase)", (v) =>
+  isValidHttpsUrl(v)
+);
+for (const key of [
+  "S3PROXY_BACKUP_CONCURRENCY",
+  "S3PROXY_BACKUP_CHUNK_STREAM_MS",
+  "S3PROXY_BACKUP_MAX_OBJECT_SIZE_MB",
+]) {
+  checkOptional(key, "backup tuning value", (v) => {
+    const n = Number(v);
+    return Number.isFinite(n) && n >= 0 ? null : "must be a number >= 0";
+  });
+}
 
 // 3) Flags
-for (const key of ["ENABLE_DOZZLE", "ENABLE_FILEBROWSER", "ENABLE_WEBSSH", "ENABLE_TAILSCALE"]) {
+for (const key of ["ENABLE_DOZZLE", "ENABLE_FILEBROWSER", "ENABLE_WEBSSH", "ENABLE_TAILSCALE", "BACKUP_SYSTEM_ENABLE"]) {
   const v = env[key];
   if (!v) {
     warnings.push(`${key} not set -> using default from scripts/compose`);

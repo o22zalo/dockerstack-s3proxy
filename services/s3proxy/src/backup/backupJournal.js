@@ -39,17 +39,22 @@ const stmts = {
   getJobById: db.prepare('SELECT * FROM backup_jobs WHERE job_id = ?'),
   getRunningJob: db.prepare("SELECT * FROM backup_jobs WHERE status='running' ORDER BY created_at ASC LIMIT 1"),
   getPendingJob: db.prepare("SELECT * FROM backup_jobs WHERE status='pending' ORDER BY created_at ASC LIMIT 1"),
+  claimPendingJob: db.prepare(`
+    UPDATE backup_jobs
+    SET status='running', started_at=COALESCE(started_at, @started_at)
+    WHERE job_id=@job_id AND status='pending'
+  `),
   listJobs: db.prepare('SELECT * FROM backup_jobs ORDER BY created_at DESC LIMIT @limit OFFSET @offset'),
   listJobsByStatus: db.prepare('SELECT * FROM backup_jobs WHERE status=@status ORDER BY created_at DESC LIMIT @limit OFFSET @offset'),
   upsertLedger: db.prepare(`
     INSERT INTO backup_ledger (
-      job_id, account_id, backend_bucket, backend_key, encoded_key, status,
+      job_id, account_id, backend_bucket, backend_key, encoded_key, destination_type, status,
       src_etag, src_size_bytes
     ) VALUES (
-      @job_id, @account_id, @backend_bucket, @backend_key, @encoded_key, @status,
+      @job_id, @account_id, @backend_bucket, @backend_key, @encoded_key, @destination_type, @status,
       @src_etag, @src_size_bytes
     )
-    ON CONFLICT(job_id, backend_key) DO UPDATE SET
+    ON CONFLICT(job_id, account_id, backend_key, destination_type) DO UPDATE SET
       status=excluded.status,
       src_etag=COALESCE(excluded.src_etag, backup_ledger.src_etag),
       src_size_bytes=COALESCE(excluded.src_size_bytes, backup_ledger.src_size_bytes)
@@ -61,7 +66,7 @@ const stmts = {
         dst_location=@dst_location,
         completed_at=@completed_at,
         error=NULL
-    WHERE job_id=@job_id AND backend_key=@backend_key
+    WHERE job_id=@job_id AND account_id=@account_id AND backend_key=@backend_key AND destination_type=@destination_type
   `),
   markLedgerFailed: db.prepare(`
     UPDATE backup_ledger
@@ -69,7 +74,7 @@ const stmts = {
         error=@error,
         attempt_count=@attempt_count,
         last_attempt_at=@last_attempt_at
-    WHERE job_id=@job_id AND backend_key=@backend_key
+    WHERE job_id=@job_id AND account_id=@account_id AND backend_key=@backend_key AND destination_type=@destination_type
   `),
   getPendingLedgerEntries: db.prepare(`
     SELECT * FROM backup_ledger
@@ -79,7 +84,9 @@ const stmts = {
   `),
   findLedgerByEtag: db.prepare(`
     SELECT * FROM backup_ledger
-    WHERE job_id=@job_id AND account_id=@account_id AND backend_key=@backend_key AND src_etag=@etag AND status='done'
+    WHERE job_id=@job_id AND account_id=@account_id AND backend_key=@backend_key
+      AND destination_type=@destination_type
+      AND src_etag=@etag AND status='done'
     LIMIT 1
   `),
   deleteJob: db.prepare('DELETE FROM backup_jobs WHERE job_id=@job_id'),
@@ -131,12 +138,14 @@ export async function createBackupJob({ type = 'full', destinationType, destinat
     options_json: JSON.stringify(options ?? {}),
   })
 
-  await backupRtdbSet(`backup/jobs/${jobId}`, {
+  await backupRtdbSet(`jobs/${jobId}`, {
     status: 'pending',
     type,
     createdAt,
     destinationType,
     progress: { totalObjects: 0, doneObjects: 0, failedObjects: 0, totalBytes: 0, doneBytes: 0 },
+  }).catch((err) => {
+    console.warn(`[backup] create job sync to RTDB failed: ${err.message}`)
   })
 
   return getJobById(jobId)
@@ -158,11 +167,13 @@ export async function updateJobStatus(jobId, status, extras = {}) {
     last_error: extras.lastError ?? null,
     resume_token: extras.resumeToken ? JSON.stringify(extras.resumeToken) : null,
   })
-  await backupRtdbPatch(`backup/jobs/${jobId}`, {
+  await backupRtdbPatch(`jobs/${jobId}`, {
     status,
     startedAt: extras.startedAt,
     completedAt: extras.completedAt,
     lastError: extras.lastError ?? null,
+  }).catch((err) => {
+    console.warn(`[backup] update status sync to RTDB failed: ${err.message}`)
   })
 }
 
@@ -189,7 +200,7 @@ export async function syncProgressToRtdb(jobId, snapshot) {
     pendingProgress.delete(jobId)
     syncTimers.delete(jobId)
     try {
-      await backupRtdbPatch(`backup/jobs/${jobId}/progress`, payload)
+      await backupRtdbPatch(`jobs/${jobId}/progress`, payload)
     } catch (err) {
       console.warn(`[backup] failed syncing progress to RTDB for job ${jobId}: ${err.message}`)
     }
@@ -202,11 +213,24 @@ export function markLedgerFailed(entry) { stmts.markLedgerFailed.run(entry) }
 export function getPendingLedgerEntries(jobId, { limit = 100, afterId = 0 } = {}) {
   return stmts.getPendingLedgerEntries.all({ job_id: jobId, limit, after_id: afterId })
 }
-export function findLedgerByEtag(jobId, accountId, backendKey, etag) {
-  return stmts.findLedgerByEtag.get({ job_id: jobId, account_id: accountId, backend_key: backendKey, etag })
+export function findLedgerByEtag(jobId, accountId, backendKey, destinationType, etag) {
+  return stmts.findLedgerByEtag.get({
+    job_id: jobId,
+    account_id: accountId,
+    backend_key: backendKey,
+    destination_type: destinationType,
+    etag,
+  })
 }
 export function getRunningJob() { return normalizeJob(stmts.getRunningJob.get()) }
 export function getPendingJob() { return normalizeJob(stmts.getPendingJob.get()) }
+export function claimNextPendingJob() {
+  const row = stmts.getPendingJob.get()
+  if (!row) return null
+  const changes = stmts.claimPendingJob.run({ job_id: row.job_id, started_at: Date.now() }).changes
+  if (changes === 0) return null
+  return normalizeJob(stmts.getJobById.get(row.job_id))
+}
 export function getJobById(jobId) { return normalizeJob(stmts.getJobById.get(jobId)) }
 export function listJobs({ limit = 20, offset = 0, status } = {}) {
   const rows = status

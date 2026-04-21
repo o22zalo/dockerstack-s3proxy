@@ -182,6 +182,7 @@ db.exec(`
     backend_bucket  TEXT NOT NULL,
     backend_key     TEXT NOT NULL,
     encoded_key     TEXT NOT NULL,
+    destination_type TEXT NOT NULL DEFAULT 'local',
     status          TEXT NOT NULL DEFAULT 'pending',
     src_etag        TEXT,
     src_size_bytes  INTEGER,
@@ -248,6 +249,7 @@ ensureColumn('accounts', 'public_bucket', 'public_bucket INTEGER NOT NULL DEFAUL
 ensureColumn('buckets', 'updated_at', 'updated_at INTEGER NOT NULL DEFAULT 0')
 ensureColumn('buckets', 'deleted_at', 'deleted_at INTEGER')
 ensureColumn('buckets', 'versioning_status', "versioning_status TEXT NOT NULL DEFAULT ''")
+ensureColumn('backup_ledger', 'destination_type', "destination_type TEXT NOT NULL DEFAULT 'local'")
 
 db.exec(`
   UPDATE routes
@@ -312,7 +314,8 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_accounts_public_active ON accounts(public_bucket, active, used_bytes);
   CREATE INDEX IF NOT EXISTS idx_buckets_deleted ON buckets(deleted_at, bucket);
   CREATE INDEX IF NOT EXISTS idx_cron_jobs_enabled ON cron_jobs(enabled, updated_at);
-  CREATE UNIQUE INDEX IF NOT EXISTS idx_backup_ledger_job_backend ON backup_ledger(job_id, backend_key);
+  DROP INDEX IF EXISTS idx_backup_ledger_job_backend;
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_backup_ledger_job_account_backend_dest ON backup_ledger(job_id, account_id, backend_key, destination_type);
   CREATE INDEX IF NOT EXISTS idx_backup_ledger_job_status ON backup_ledger(job_id, status);
   CREATE INDEX IF NOT EXISTS idx_backup_jobs_status_created ON backup_jobs(status, created_at);
   CREATE INDEX IF NOT EXISTS idx_mig_ledger_status ON backend_migration_ledger(migration_id, status);
@@ -597,6 +600,11 @@ const stmts = {
     SELECT account_id, state, COUNT(*) AS object_count
     FROM routes
     GROUP BY account_id, state
+  `),
+  backupJobCountsByStatus: db.prepare(`
+    SELECT status, COUNT(*) AS total
+    FROM backup_jobs
+    GROUP BY status
   `),
 }
 
@@ -1086,4 +1094,8 @@ export function getLogicalBytesByBucketAccount() {
 
 export function getRouteStateCountsByAccount() {
   return stmts.stateCountsByAccount.all()
+}
+
+export function getBackupJobStatusCounts() {
+  return stmts.backupJobCountsByStatus.all()
 }

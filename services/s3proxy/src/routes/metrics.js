@@ -6,6 +6,7 @@
 import { Registry, Counter, Gauge, Histogram, collectDefaultMetrics } from 'prom-client'
 import {
   getActiveObjectStatsByBucket,
+  getBackupJobStatusCounts,
   getLogicalBytesByBucketAccount,
   getRouteStateCountsByAccount,
 } from '../db.js'
@@ -138,6 +139,12 @@ export const metrics = {
     labelNames: ['bucket', 'account_id'],
     registers: [register],
   }),
+  backupJobsByStatus: new Gauge({
+    name: 's3proxy_backup_jobs_by_status',
+    help: 'Backup job count grouped by status',
+    labelNames: ['status'],
+    registers: [register],
+  }),
 }
 
 export function refreshMetadataMetrics() {
@@ -145,6 +152,7 @@ export function refreshMetadataMetrics() {
   metrics.logicalObjectBytes.reset()
   metrics.orphanBackendObjects.reset()
   metrics.missingBackendObjects.reset()
+  metrics.backupJobsByStatus.reset()
 
   for (const row of getActiveObjectStatsByBucket()) {
     metrics.activeLogicalObjects.set({ bucket: row.bucket }, row.object_count)
@@ -161,6 +169,10 @@ export function refreshMetadataMetrics() {
     if (row.state === 'MISSING_BACKEND') {
       metrics.missingBackendObjects.set({ account_id: row.account_id }, row.object_count)
     }
+  }
+
+  for (const row of getBackupJobStatusCounts()) {
+    metrics.backupJobsByStatus.set({ status: row.status }, row.total)
   }
 }
 

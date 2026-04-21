@@ -47,6 +47,21 @@ async function startFakeS3() {
     }
 
     if (req.method === 'GET') {
+      if (url.searchParams.get('list-type') === '2') {
+        const bucket = parts[0]
+        const keys = [...objectMap.keys()]
+          .filter((value) => value.startsWith(`${bucket}/`))
+          .map((value) => value.slice(bucket.length + 1))
+        res.statusCode = 200
+        res.setHeader('Content-Type', 'application/xml')
+        res.end([
+          '<?xml version="1.0" encoding="UTF-8"?>',
+          '<ListBucketResult>',
+          ...keys.map((entry) => `<Contents><Key>${entry}</Key><Size>${objectMap.get(`${bucket}/${entry}`).length}</Size><ETag>"etag-1"</ETag></Contents>`),
+          '</ListBucketResult>',
+        ].join(''))
+        return
+      }
       if (!objectMap.has(key)) { res.statusCode = 404; res.end('missing'); return }
       const body = objectMap.get(key)
       res.statusCode = 200

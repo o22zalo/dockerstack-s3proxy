@@ -1,38 +1,22 @@
-# Backup System Implementation Report (Round 2)
+# Backup System Implementation Report (Round 3)
 
-## Trạng thái sau review
+## Mức độ khớp với review
 
-| Hạng mục | Trạng thái |
-|---|---|
-| Container `backup-worker` + flag `BACKUP_SYSTEM_ENABLE` | ✅ |
-| Auth protection cho `/admin/backup/*` | ✅ |
-| SQLite: `backup_jobs`, `backup_ledger` | ✅ |
-| SQLite: `backend_migrations`, `backend_migration_ledger` | ✅ |
-| RTDB progress throttle (2s debounce) | ✅ |
-| API bổ sung: stop/pause/resume/delete/ledger/config | ✅ |
-| Destination `s3` | ✅ (MVP) |
-| Destination `gdrive`, `onedrive`, `zip` | ⏳ |
-| `restoreManager.js`, `backendReplacer.js` | ✅ (stub API contract) |
-| Admin UI tab backup | ✅ (MVP tab + actions cơ bản) |
+- ✅ Đã fix auth cho toàn bộ `/admin/backup/*`.
+- ✅ Đã sửa builder URL của backup RTDB để dùng đúng format khi `BACKUP_RTDB_URL` kết thúc bằng `/backup.json?auth=...`.
+- ✅ Đã chuyển flow backup sang **scan inventory thật từ backend S3** (`scanAccountInventory`) thay vì chỉ đọc metadata SQLite.
+- ✅ Có `resume_token` thực tế theo `accountId + continuationToken + lastKey` trong quá trình scan.
+- ✅ RTDB backup sync chuyển sang **best effort** (log warning, không làm fail toàn job).
+- ✅ Ledger đã tránh ghi đè sai trong multi-account/multi-destination bằng unique key theo `(job_id, account_id, backend_key, destination_type)`.
+- ✅ Đã thực thi runtime options `BACKUP_MAX_OBJECT_SIZE_MB`, `dryRun`, `includeRtdb`.
+- ✅ Progress đã cập nhật theo từng object (`currentAccountId`, `currentKey`, `percentDone`).
+- ✅ API trả job đã sanitize secret trong `destination_config`.
+- ✅ Route create job trả lỗi 400 nếu destination type không support.
+- ✅ 404 nguồn trong worker xử lý thành `skipped`.
+- ✅ Đã thêm health/metrics/validate-env cho backup ở mức cơ bản.
 
-## Những gì đã xử lý thêm ở vòng này
+## Phần còn lại chưa full-plan
 
-1. **Bảo mật route backup**
-   - Tất cả route `/admin/backup/*` đã đi qua `fastify.authenticate`.
-2. **Mở rộng API quản trị**
-   - Thêm: `stop`, `pause`, `resume`, `DELETE job`, `GET ledger`, `GET config`, `restore`, `backend health/replace/migrate/diagnose`.
-3. **S3 destination**
-   - Thêm adapter `s3Dest.js` hỗ trợ PutObject và multipart upload khi object lớn.
-4. **Throttle sync Firebase backup**
-   - Debounce 2 giây cho progress sync để giảm tải RTDB.
-5. **Schema migration backend**
-   - Bổ sung 2 bảng migration backend theo kế hoạch.
-6. **Admin UI**
-   - Thêm tab Backup (MVP) với tạo job, refresh, pause/resume/cancel.
-7. **Test bổ sung**
-   - Thêm test `backup-api.test.js` để verify auth + endpoint mới.
-
-## Ghi chú phạm vi còn lại
-
-- `restoreManager.js` và `backendReplacer.js` hiện ở dạng contract/stub để mở route đầy đủ, chưa copy dữ liệu production-grade.
-- `gdrive`, `onedrive`, `zip` destinations chưa hoàn tất.
+- ⏳ `restoreManager` và `backendReplacer` mới dừng ở mức contract/stub.
+- ⏳ Destinations `gdrive`, `onedrive`, `zip` chưa hoàn tất production logic.
+- ⏳ Chưa có locking phân tán cứng (leader election) nếu scale nhiều `backup-worker` instance.

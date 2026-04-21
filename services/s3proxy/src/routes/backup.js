@@ -1,7 +1,6 @@
 import {
   cancelBackupJob,
   getJobLiveStatus,
-  getBackupJob,
   listBackupJobLedger,
   listBackupJobs,
   pauseBackupJob,
@@ -14,6 +13,30 @@ import { checkBackendHealth, diagnoseBackend, migrateBackendObjects, replaceBack
 import { startRestoreJob, verifyRestoreIntegrity } from '../backup/restoreManager.js'
 import { getAccountById } from '../db.js'
 
+function sanitizeSecrets(value) {
+  if (Array.isArray(value)) return value.map(sanitizeSecrets)
+  if (!value || typeof value !== 'object') return value
+  const masked = {}
+  for (const [key, entry] of Object.entries(value)) {
+    if (/(secret|token|password|key)/i.test(key)) {
+      masked[key] = typeof entry === 'string' && entry.length > 4
+        ? `${entry.slice(0, 2)}***${entry.slice(-2)}`
+        : '***'
+    } else {
+      masked[key] = sanitizeSecrets(entry)
+    }
+  }
+  return masked
+}
+
+function sanitizeJob(job) {
+  if (!job) return job
+  return {
+    ...job,
+    destination_config: sanitizeSecrets(job.destination_config || {}),
+  }
+}
+
 export default async function backupRoutes(fastify) {
   fastify.addHook('preHandler', fastify.authenticate)
 
@@ -21,7 +44,7 @@ export default async function backupRoutes(fastify) {
     const limit = Number(request.query.limit || 20)
     const offset = Number(request.query.offset || 0)
     const status = request.query.status ? String(request.query.status) : undefined
-    return { ok: true, jobs: listBackupJobs({ limit, offset, status }) }
+    return { ok: true, jobs: listBackupJobs({ limit, offset, status }).map(sanitizeJob) }
   })
 
   fastify.get('/admin/backup/jobs/:jobId', async (request, reply) => {
@@ -30,7 +53,7 @@ export default async function backupRoutes(fastify) {
       reply.code(404)
       return { ok: false, error: 'JOB_NOT_FOUND' }
     }
-    return { ok: true, job: row }
+    return { ok: true, job: sanitizeJob(row) }
   })
 
   fastify.post('/admin/backup/jobs', async (request, reply) => {
@@ -41,16 +64,21 @@ export default async function backupRoutes(fastify) {
       return { ok: false, error: 'MISSING_DESTINATION_TYPE' }
     }
 
-    const job = await startBackupJob({
-      type: body.type || 'full',
-      destinationType,
-      destinationConfig: body.destinationConfig || {},
-      accountFilter: Array.isArray(body.accountFilter) ? body.accountFilter : [],
-      options: body.options || {},
-    })
+    try {
+      const job = await startBackupJob({
+        type: body.type || 'full',
+        destinationType,
+        destinationConfig: body.destinationConfig || {},
+        accountFilter: Array.isArray(body.accountFilter) ? body.accountFilter : [],
+        options: body.options || {},
+      })
 
-    reply.code(202)
-    return { ok: true, job }
+      reply.code(202)
+      return { ok: true, job: sanitizeJob(job) }
+    } catch (err) {
+      reply.code(400)
+      return { ok: false, error: err.message }
+    }
   })
 
   fastify.post('/admin/backup/jobs/:jobId/cancel', async (request) => {
@@ -70,7 +98,7 @@ export default async function backupRoutes(fastify) {
 
   fastify.post('/admin/backup/jobs/:jobId/resume', async (request) => {
     const job = await resumeBackupJob(request.params.jobId)
-    return { ok: true, action: 'resume', job }
+    return { ok: true, action: 'resume', job: sanitizeJob(job) }
   })
 
   fastify.delete('/admin/backup/jobs/:jobId', async (request, reply) => {
