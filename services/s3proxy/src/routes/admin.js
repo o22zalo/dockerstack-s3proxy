@@ -1726,7 +1726,7 @@ export default async function adminRoutes(fastify, _opts) {
     },
   );
 
-  fastify.post("/api/cron-jobs/:jobId/run", async (request, reply) => {
+  fastify.post("/api/cron-jobs/:jobId/run", { preHandler: [fastify.authenticate] }, async (request, reply) => {
     try {
       const payload = parseBodyObject(request.body);
       const result = await runCronJobNow(request.params.jobId, {

@@ -40,14 +40,12 @@ export class S3Destination {
     const targetKey = this.withPrefix(key)
 
     if ((Number(size) || 0) <= 5 * 1024 * 1024) {
-      const chunks = []
-      for await (const chunk of stream) chunks.push(toBuffer(chunk))
-      const body = Buffer.concat(chunks)
       const response = await this.client.send(new PutObjectCommand({
         Bucket: this.bucket,
         Key: targetKey,
-        Body: body,
+        Body: stream,
         ContentType: contentType,
+        ContentLength: (Number(size) || undefined),
       }), { abortSignal: signal })
       return { key: targetKey, location: `s3://${this.bucket}/${targetKey}`, etag: response.ETag?.replace(/"/g, '') || '' }
     }
