@@ -89,6 +89,14 @@ export async function copyObjectToDestination({
         dst_location: uploadResult.location,
         completed_at: Date.now(),
       })
+      logger?.info?.({
+        event: 'backup_object_done',
+        jobId,
+        accountId: account.account_id,
+        backendKey,
+        sizeBytes,
+        dstKey: uploadResult.key || dstKey,
+      }, 'Object backed up')
 
       return {
         status: 'done',
@@ -121,7 +129,13 @@ export async function copyObjectToDestination({
       })
 
       if (attempt >= 3) {
-        logger?.error?.({ err: err.message, jobId, backendKey }, 'backup copy failed')
+        logger?.error?.({
+          event: 'backup_object_failed',
+          jobId,
+          backendKey,
+          attempt,
+          err: err.message,
+        }, 'Object backup failed')
         return { status: 'failed', error: err.message }
       }
 

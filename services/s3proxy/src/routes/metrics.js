@@ -10,6 +10,7 @@ import {
   getLogicalBytesByBucketAccount,
   getRouteStateCountsByAccount,
 } from '../db.js'
+import { listJobs } from '../backup/backupJournal.js'
 
 export const register = new Registry()
 register.setDefaultLabels({ service: 's3proxy' })
@@ -147,25 +148,27 @@ export const metrics = {
   }),
   backupObjectsTotal: new Counter({
     name: 's3proxy_backup_objects_total',
-    help: 'Backup objects processed by result',
-    labelNames: ['result'],
+    help: 'Objects processed by backup system',
+    labelNames: ['status', 'destination_type'],
     registers: [register],
   }),
   backupBytesTotal: new Counter({
     name: 's3proxy_backup_bytes_total',
-    help: 'Total bytes copied by backup jobs',
-    labelNames: ['result'],
-    registers: [register],
-  }),
-  backupRetriesTotal: new Counter({
-    name: 's3proxy_backup_retries_total',
-    help: 'Backup retry attempts',
+    help: 'Bytes transferred by backup system',
+    labelNames: ['destination_type'],
     registers: [register],
   }),
   backupJobDurationSeconds: new Histogram({
     name: 's3proxy_backup_job_duration_seconds',
-    help: 'Backup job total duration',
-    buckets: [1, 5, 10, 30, 60, 120, 300, 600, 1800],
+    help: 'Backup job duration in seconds',
+    labelNames: ['type', 'status'],
+    buckets: [60, 300, 600, 1800, 3600, 7200],
+    registers: [register],
+  }),
+  migrationObjectsTotal: new Counter({
+    name: 's3proxy_migration_objects_total',
+    help: 'Objects migrated between backends',
+    labelNames: ['status'],
     registers: [register],
   }),
 }
@@ -197,6 +200,16 @@ export function refreshMetadataMetrics() {
   for (const row of getBackupJobStatusCounts()) {
     metrics.backupJobsByStatus.set({ status: row.status }, row.total)
   }
+
+  try {
+    const completedJobs = listJobs({ limit: 100, status: 'completed' })
+    for (const job of completedJobs) {
+      if (job.started_at && job.completed_at) {
+        const duration = (job.completed_at - job.started_at) / 1000
+        metrics.backupJobDurationSeconds.observe({ type: job.type || 'full', status: 'completed' }, duration)
+      }
+    }
+  } catch {}
 }
 
 export default async function metricsRoutes(fastify, _opts) {

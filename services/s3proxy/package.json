@@ -29,7 +29,8 @@
     "pino": "^8",
     "pino-pretty": "^11",
     "prom-client": "^15",
-    "undici": "^6"
+    "undici": "^6",
+    "archiver": "^7"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

@@ -7,6 +7,7 @@ import { getAccountsStats } from '../accountPool.js'
 import { countRoutes } from '../db.js'
 import { cacheSize } from '../cache.js'
 import config from '../config.js'
+import { getRunningJob, listJobs } from '../backup/backupJournal.js'
 
 let _rtdbState = { connected: false, listenerActive: false }
 
@@ -61,10 +62,27 @@ export default async function healthRoutes(fastify, _opts) {
         usedBytes: accountStats.usedBytes,
         percentUsed,
       },
-      backup: {
-        enabled: config.BACKUP_ENABLED,
-        backupRtdbConfigured: Boolean(config.BACKUP_RTDB_URL),
-      },
+      backup: (() => {
+        try {
+          const running = getRunningJob?.()
+          const recentJobs = listJobs?.({ limit: 1, offset: 0, status: 'completed' }) ?? []
+          const lastCompleted = recentJobs[0] ?? null
+          return {
+            enabled: config.BACKUP_ENABLED,
+            rtdbConfigured: Boolean(config.BACKUP_RTDB_URL),
+            runningJobs: running ? 1 : 0,
+            lastCompletedJob: lastCompleted ? {
+              jobId: lastCompleted.job_id,
+              completedAt: lastCompleted.completed_at,
+              status: lastCompleted.status,
+              totalObjects: lastCompleted.total_objects,
+              doneObjects: lastCompleted.done_objects,
+            } : null,
+          }
+        } catch {
+          return { enabled: config.BACKUP_ENABLED, rtdbConfigured: Boolean(config.BACKUP_RTDB_URL) }
+        }
+      })(),
     })
   })
 }

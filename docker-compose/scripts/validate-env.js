@@ -157,22 +157,26 @@ for (const key of [
 ]) {
   checkOptional(key, "s3proxy tuning value");
 }
-checkOptional("S3PROXY_BACKUP_RTDB_URL", "backup RTDB URL (separate Firebase)", (v) =>
-  isValidHttpsUrl(v)
-);
-for (const key of [
-  "S3PROXY_BACKUP_CONCURRENCY",
-  "S3PROXY_BACKUP_CHUNK_STREAM_MS",
-  "S3PROXY_BACKUP_MAX_OBJECT_SIZE_MB",
-]) {
+checkOptional('BACKUP_RTDB_URL', 'separate Firebase RTDB for backup metadata', (v) => {
+  try {
+    const u = new URL(v);
+    if (u.protocol !== 'https:') return 'must use https';
+    if (!u.pathname.endsWith('.json')) return 'must end with .json';
+    if (!u.search.includes('auth=')) return 'must include ?auth= parameter';
+    return null;
+  } catch {
+    return 'must be valid URL';
+  }
+});
+for (const key of ['BACKUP_CONCURRENCY', 'BACKUP_CHUNK_STREAM_MS', 'BACKUP_MAX_OBJECT_SIZE_MB']) {
   checkOptional(key, "backup tuning value", (v) => {
     const n = Number(v);
-    return Number.isFinite(n) && n >= 0 ? null : "must be a number >= 0";
+    return Number.isFinite(n) && n > 0 ? null : "must be positive number";
   });
 }
 
 // 3) Flags
-for (const key of ["ENABLE_DOZZLE", "ENABLE_FILEBROWSER", "ENABLE_WEBSSH", "ENABLE_TAILSCALE", "BACKUP_SYSTEM_ENABLE"]) {
+for (const key of ["ENABLE_DOZZLE", "ENABLE_FILEBROWSER", "ENABLE_WEBSSH", "ENABLE_TAILSCALE", "BACKUP_ENABLED"]) {
   const v = env[key];
   if (!v) {
     warnings.push(`${key} not set -> using default from scripts/compose`);

@@ -274,7 +274,8 @@ export async function processBackupJob(job, logger = console) {
               continue
             }
             if (resumeToken.lastKey && !resumeToken.continuationToken && resumeToken.accountId === account.account_id) {
-              if (object.backendKey <= resumeToken.lastKey) continue
+              if (object.backendKey < resumeToken.lastKey) continue
+              resumeToken = {}
             }
             if ((Number(object.sizeBytes) || 0) > maxObjectSizeBytes) {
               progress.totalObjects += 1
@@ -307,9 +308,9 @@ export async function processBackupJob(job, logger = console) {
                   accountId: account.account_id,
                   backendKey: object.backendKey,
                 }, 'backup object skipped')
+                metrics.backupObjectsTotal.inc({ status: 'skipped', destination_type: destination.type })
+                metrics.backupBytesTotal.inc({ destination_type: destination.type }, Number(object.sizeBytes || 0))
               }
-              metrics.backupObjectsTotal.inc({ result: 'skipped' })
-              metrics.backupBytesTotal.inc({ result: 'skipped' }, Number(object.sizeBytes || 0))
               progress.doneObjects += 1
               progress.percentDone = progress.totalObjects > 0
                 ? Number((((progress.doneObjects + progress.failedObjects) / progress.totalObjects) * 100).toFixed(2))
@@ -368,12 +369,12 @@ export async function processBackupJob(job, logger = console) {
                 }
                 if (hasFailedDestination) {
                   progress.failedObjects += 1
-                  metrics.backupObjectsTotal.inc({ result: 'failed' })
+                  metrics.backupObjectsTotal.inc({ status: 'failed', destination_type: destinationType })
                 } else if (hasDoneDestination) {
                   progress.doneObjects += 1
                   progress.doneBytes += Number(object.sizeBytes || 0)
-                  metrics.backupObjectsTotal.inc({ result: 'done' })
-                  metrics.backupBytesTotal.inc({ result: 'done' }, Number(object.sizeBytes || 0))
+                  metrics.backupObjectsTotal.inc({ status: 'done', destination_type: destinationType })
+                  metrics.backupBytesTotal.inc({ destination_type: destinationType }, Number(object.sizeBytes || 0))
                 }
               } finally {
                 progress.percentDone = progress.totalObjects > 0
@@ -385,7 +386,7 @@ export async function processBackupJob(job, logger = console) {
             })()
             inFlight.add(task)
             task.finally(() => inFlight.delete(task))
-            if (inFlight.size >= Math.max(2, Number(config.BACKUP_CONCURRENCY || 3) * 4)) {
+            if (inFlight.size >= Math.max(Number(config.BACKUP_CONCURRENCY || 3) * 2, 6)) {
               await Promise.race(inFlight)
             }
             await new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(config.BACKUP_CHUNK_STREAM_MS || 50))))
@@ -429,9 +430,9 @@ export async function processBackupJob(job, logger = console) {
       }
     }
   } catch (err) {
-    logger?.error?.({ event: 'backup_job_failed', jobId: job.job_id, err: err.message }, 'backup job failed')
+    logger?.error?.({ event: 'backup_job_failed', jobId: job.job_id, error: err.message }, 'Backup job terminated with error')
     progress.failedObjects += 1
-    metrics.backupObjectsTotal.inc({ result: 'failed' })
+    metrics.backupObjectsTotal.inc({ status: 'failed', destination_type: destinationType })
     progress.lastError = err.message
     await updateJobProgress(job.job_id, progress)
     await updateJobStatus(job.job_id, 'failed', {
@@ -485,10 +486,14 @@ export async function processBackupJob(job, logger = console) {
       runningInstanceId: null,
       runningHeartbeatAt: null,
     })
+    logger?.info?.({ event: 'backup_job_completed', jobId: job.job_id, ...progress }, 'Backup job completed')
   }
 
   const durationSec = Math.max(0, (Date.now() - startedAtMs) / 1000)
-  metrics.backupJobDurationSeconds.observe(durationSec)
+  metrics.backupJobDurationSeconds.observe({
+    type: job.type || 'full',
+    status: getJobById(job.job_id)?.status || 'unknown',
+  }, durationSec)
   logger?.info?.({
     event: 'backup_job_finished',
     jobId: job.job_id,

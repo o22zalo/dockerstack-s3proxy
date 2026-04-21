@@ -9,7 +9,7 @@ import {
   startBackupJob,
 } from '../backup/backupManager.js'
 import config from '../config.js'
-import { checkBackendHealth, diagnoseBackend, migrateBackendObjects, replaceBackendConfig } from '../backup/backendReplacer.js'
+import { checkBackendHealth, diagnoseBackend, migrateBackendObjects, replaceBackendConfig, rollbackMigration } from '../backup/backendReplacer.js'
 import { startRestoreJob, verifyRestoreIntegrity } from '../backup/restoreManager.js'
 import { getAccountById } from '../db.js'
 
@@ -125,7 +125,7 @@ export default async function backupRoutes(fastify) {
       backupConcurrency: config.BACKUP_CONCURRENCY,
       backupChunkStreamMs: config.BACKUP_CHUNK_STREAM_MS,
       backupMaxObjectSizeMb: config.BACKUP_MAX_OBJECT_SIZE_MB,
-      destinationTypes: ['local', 'mock', 's3'],
+      destinationTypes: ['local', 'mock', 's3', 'zip', 'gdrive', 'onedrive'],
     },
   }))
 
@@ -133,7 +133,8 @@ export default async function backupRoutes(fastify) {
     const payload = request.body || {}
     const result = await startRestoreJob({
       sourceJobId: payload.sourceJobId,
-      sourceDestination: payload.sourceDestination,
+      sourceDestinationType: payload.sourceDestinationType || payload.sourceDestination?.type,
+      sourceDestinationConfig: payload.sourceDestinationConfig || payload.sourceDestination?.config || {},
       targetAccountMapping: payload.targetAccountMapping || {},
       options: payload.options || {},
       logger: fastify.log,
@@ -188,6 +189,74 @@ export default async function backupRoutes(fastify) {
     if (result?.error === 'not_implemented') {
       return reply.code(501).send({ ok: false, error: 'NOT_IMPLEMENTED', result })
     }
+    return { ok: true, result }
+  })
+
+  fastify.get('/admin/backup/jobs/:jobId/download', async (request, reply) => {
+    const job = getJobLiveStatus(request.params.jobId)
+    if (!job) return reply.code(404).send({ ok: false, error: 'JOB_NOT_FOUND' })
+    if (job.destination_type !== 'zip') {
+      return reply.code(400).send({ ok: false, error: 'JOB_NOT_ZIP_TYPE' })
+    }
+    if (job.status !== 'completed') {
+      return reply.code(409).send({ ok: false, error: 'JOB_NOT_COMPLETED' })
+    }
+    reply.raw.setHeader('Content-Type', 'application/zip')
+    reply.raw.setHeader('Content-Disposition', `attachment; filename="backup-${request.params.jobId}.zip"`)
+    reply.raw.setHeader('Cache-Control', 'no-store')
+    return reply.raw
+  })
+
+  fastify.get('/admin/backup/jobs/:jobId/events', async (request, reply) => {
+    const { jobId } = request.params
+    reply.raw.setHeader('Content-Type', 'text/event-stream')
+    reply.raw.setHeader('Cache-Control', 'no-cache')
+    reply.raw.setHeader('Connection', 'keep-alive')
+    reply.raw.flushHeaders?.()
+
+    const send = (data) => {
+      if (!reply.raw.writableEnded) {
+        reply.raw.write(`data: ${JSON.stringify(data)}\n\n`)
+      }
+    }
+
+    const interval = setInterval(() => {
+      const status = getJobLiveStatus(jobId)
+      if (!status) {
+        clearInterval(interval)
+        reply.raw.end()
+        return
+      }
+      send(sanitizeJob(status))
+      if (['completed', 'failed', 'cancelled'].includes(status.status)) {
+        clearInterval(interval)
+        reply.raw.end()
+      }
+    }, 1000)
+
+    request.raw.on('close', () => clearInterval(interval))
+    return reply
+  })
+
+  fastify.post('/admin/backup/config/test', async (request, reply) => {
+    const { rtdbUrl } = request.body || {}
+    const url = rtdbUrl || config.BACKUP_RTDB_URL
+    if (!url) return reply.code(400).send({ ok: false, error: 'NO_RTDB_URL' })
+    try {
+      const testUrl = url.endsWith('.json') ? url : `${url}.json`
+      const res = await fetch(testUrl, { method: 'GET', signal: AbortSignal.timeout(5000) })
+      return { ok: res.ok, status: res.status }
+    } catch (err) {
+      return reply.code(502).send({ ok: false, error: err.message })
+    }
+  })
+
+  fastify.get('/admin/backup/backends/migrations', async () => {
+    return { ok: true, migrations: [] }
+  })
+
+  fastify.post('/admin/backup/backends/migrations/:migrationId/rollback', async (request) => {
+    const result = await rollbackMigration(request.params.migrationId)
     return { ok: true, result }
   })
 }
