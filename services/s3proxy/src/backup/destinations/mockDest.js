@@ -30,4 +30,10 @@ export class MockHttpDestination {
     const location = res.headers.get('x-mock-location') || `${this.endpoint}/objects/${encodeURIComponent(targetKey)}`
     return { location, etag: res.headers.get('etag') || '', key: targetKey }
   }
+
+  async read(_key) { throw new Error('mock destination read() is not implemented') }
+  async exists(_key) { throw new Error('mock destination exists() is not implemented') }
+  async * listKeys(_prefix = '') { }
+  async delete(_key) { throw new Error('mock destination delete() is not implemented') }
+  async getMetadata(_key) { throw new Error('mock destination getMetadata() is not implemented') }
 }

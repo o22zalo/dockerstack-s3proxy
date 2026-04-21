@@ -1,7 +1,11 @@
 import {
   AbortMultipartUploadCommand,
+  DeleteObjectCommand,
   CompleteMultipartUploadCommand,
   CreateMultipartUploadCommand,
+  GetObjectCommand,
+  HeadObjectCommand,
+  ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
   UploadPartCommand,
@@ -108,6 +112,60 @@ export class S3Destination {
         UploadId: uploadId,
       })).catch(() => {})
       throw error
+    }
+  }
+
+  async read(key) {
+    const res = await this.client.send(new GetObjectCommand({
+      Bucket: this.bucket,
+      Key: this.withPrefix(key),
+    }))
+    return res.Body
+  }
+
+  async exists(key) {
+    try {
+      await this.client.send(new HeadObjectCommand({
+        Bucket: this.bucket,
+        Key: this.withPrefix(key),
+      }))
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  async * listKeys(prefix = '') {
+    let continuationToken
+    do {
+      const res = await this.client.send(new ListObjectsV2Command({
+        Bucket: this.bucket,
+        Prefix: this.withPrefix(prefix),
+        ContinuationToken: continuationToken,
+      }))
+      for (const item of res.Contents || []) {
+        yield { key: item.Key, etag: item.ETag?.replace(/\"/g, '') || '', size: Number(item.Size || 0) }
+      }
+      continuationToken = res.IsTruncated ? res.NextContinuationToken : null
+    } while (continuationToken)
+  }
+
+  async delete(key) {
+    await this.client.send(new DeleteObjectCommand({
+      Bucket: this.bucket,
+      Key: this.withPrefix(key),
+    }))
+  }
+
+  async getMetadata(key) {
+    const res = await this.client.send(new HeadObjectCommand({
+      Bucket: this.bucket,
+      Key: this.withPrefix(key),
+    }))
+    return {
+      etag: res.ETag?.replace(/\"/g, '') || '',
+      size: Number(res.ContentLength || 0),
+      contentType: res.ContentType || 'application/octet-stream',
     }
   }
 }

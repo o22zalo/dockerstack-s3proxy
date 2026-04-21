@@ -1,4 +1,4 @@
-import { createWriteStream, mkdirSync } from 'fs'
+import { createReadStream, createWriteStream, existsSync, mkdirSync, rmSync, statSync } from 'fs'
 import { dirname, join } from 'path'
 import { pipeline } from 'stream/promises'
 
@@ -17,6 +17,31 @@ export class LocalDestination {
       location: `file://${fullPath}`,
       etag: '',
       key: relativePath,
+    }
+  }
+
+  async read(key) {
+    return createReadStream(join(this.rootDir, this.prefix, key))
+  }
+
+  async exists(key) {
+    return existsSync(join(this.rootDir, this.prefix, key))
+  }
+
+  async * listKeys(_prefix = '') {
+    // MVP: local destination currently does not recursively enumerate.
+  }
+
+  async delete(key) {
+    rmSync(join(this.rootDir, this.prefix, key), { force: true })
+  }
+
+  async getMetadata(key) {
+    const stats = statSync(join(this.rootDir, this.prefix, key))
+    return {
+      etag: '',
+      size: stats.size,
+      contentType: 'application/octet-stream',
     }
   }
 }

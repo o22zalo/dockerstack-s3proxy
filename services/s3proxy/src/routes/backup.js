@@ -129,7 +129,7 @@ export default async function backupRoutes(fastify) {
     },
   }))
 
-  fastify.post('/admin/backup/restore', async (request) => {
+  fastify.post('/admin/backup/restore', async (request, reply) => {
     const payload = request.body || {}
     const result = await startRestoreJob({
       sourceJobId: payload.sourceJobId,
@@ -138,11 +138,17 @@ export default async function backupRoutes(fastify) {
       options: payload.options || {},
       logger: fastify.log,
     })
+    if (result?.status === 'not_implemented') {
+      return reply.code(501).send({ ok: false, error: 'NOT_IMPLEMENTED', result })
+    }
     return { ok: true, result }
   })
 
-  fastify.get('/admin/backup/restore/:jobId/verify', async (request) => {
+  fastify.get('/admin/backup/restore/:jobId/verify', async (request, reply) => {
     const result = await verifyRestoreIntegrity(request.params.jobId, null)
+    if (result?.status === 'not_implemented') {
+      return reply.code(501).send({ ok: false, error: 'NOT_IMPLEMENTED', result })
+    }
     return { ok: true, result }
   })
 
@@ -153,18 +159,27 @@ export default async function backupRoutes(fastify) {
       return { ok: false, error: 'ACCOUNT_NOT_FOUND' }
     }
     const result = await checkBackendHealth(account)
+    if (result?.status === 'not_implemented') {
+      return reply.code(501).send({ ok: false, error: 'NOT_IMPLEMENTED', result })
+    }
     return { ok: true, result }
   })
 
-  fastify.post('/admin/backup/backends/replace-config', async (request) => {
+  fastify.post('/admin/backup/backends/replace-config', async (request, reply) => {
     const body = request.body || {}
     const result = await replaceBackendConfig(body.sourceAccountId, body.newAccountConfig || {}, { dryRun: Boolean(body.dryRun) })
+    if (result?.status === 'not_implemented') {
+      return reply.code(501).send({ ok: false, error: 'NOT_IMPLEMENTED', result })
+    }
     return { ok: true, result }
   })
 
-  fastify.post('/admin/backup/backends/migrate', async (request) => {
+  fastify.post('/admin/backup/backends/migrate', async (request, reply) => {
     const body = request.body || {}
     const result = await migrateBackendObjects(body.sourceAccountId, body.targetAccountId, body.options || {}, fastify.log)
+    if (result?.status === 'not_implemented') {
+      return reply.code(501).send({ ok: false, error: 'NOT_IMPLEMENTED', result })
+    }
     return { ok: true, result }
   })
 

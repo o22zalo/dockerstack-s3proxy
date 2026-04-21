@@ -80,23 +80,14 @@ export function getBackupJob(jobId) {
 
 export async function cancelBackupJob(jobId) {
   const active = activeJobs.get(jobId)
-  if (active) {
-    active.abortController.abort('cancelled')
-    activeJobs.delete(jobId)
-  }
-  await updateJobStatus(jobId, 'cancelled', { completedAt: Date.now(), lastError: 'cancelled_by_user' })
+  if (active) active.abortController.abort('cancelled')
+  await updateJobStatus(jobId, 'cancelled', { lastError: 'cancelled_by_user' })
 }
 
 export async function pauseBackupJob(jobId) {
   const active = activeJobs.get(jobId)
-  if (active) {
-    active.abortController.abort('paused')
-    activeJobs.delete(jobId)
-  }
-  await updateJobStatus(jobId, 'paused', {
-    resumeToken: { pausedAt: Date.now() },
-    lastError: 'paused_by_user',
-  })
+  if (active) active.abortController.abort('paused')
+  await updateJobStatus(jobId, 'paused', { lastError: 'paused_by_user' })
 }
 
 export async function resumeBackupJob(jobId) {
@@ -105,7 +96,7 @@ export async function resumeBackupJob(jobId) {
   if (job.status !== 'paused' && job.status !== 'failed' && job.status !== 'cancelled') {
     return job
   }
-  await updateJobStatus(jobId, 'pending', { lastError: null })
+  await updateJobStatus(jobId, 'pending', { completedAt: null, lastError: null })
   return getJobById(jobId)
 }
 
@@ -115,7 +106,7 @@ export function getJobLiveStatus(jobId) {
   return {
     ...persisted,
     live: {
-      running,
+      running: persisted?.status === 'running',
       inMemory: running ? 'active' : 'idle',
     },
   }
@@ -176,8 +167,15 @@ export async function processBackupJob(job, logger = console) {
   await updateJobProgress(job.job_id, progress)
 
   const semaphore = buildSemaphore(Math.max(1, Number(config.BACKUP_CONCURRENCY || 3)))
-  const tasks = []
+  const inFlight = new Set()
   const maxObjectSizeBytes = Math.max(1, Number(config.BACKUP_MAX_OBJECT_SIZE_MB || 512)) * 1024 * 1024
+
+  const shouldStopFromDb = async () => {
+    const latest = getJobById(job.job_id)
+    if (!latest) return true
+    if (latest.status === 'paused' || latest.status === 'cancelled') return true
+    return false
+  }
 
   try {
     for (const account of targetAccounts) {
@@ -191,6 +189,10 @@ export async function processBackupJob(job, logger = console) {
         onPage: async ({ objects, nextContinuationToken }) => {
           for (const object of objects) {
             if (abortController.signal.aborted) break
+            if (await shouldStopFromDb()) {
+              abortController.abort('db_status_stop')
+              break
+            }
             if ((Number(object.sizeBytes) || 0) > maxObjectSizeBytes) {
               continue
             }
@@ -209,6 +211,8 @@ export async function processBackupJob(job, logger = console) {
             await semaphore.acquire()
             const task = (async () => {
               try {
+                let hasFailedDestination = false
+                let hasDoneDestination = false
                 for (const destination of destinations) {
                   upsertLedgerEntry({
                     job_id: job.job_id,
@@ -235,12 +239,17 @@ export async function processBackupJob(job, logger = console) {
                   })
 
                   if (result.status === 'failed') {
-                    progress.failedObjects += 1
+                    hasFailedDestination = true
                     progress.lastError = result.error || 'unknown copy failure'
-                  } else if (result.status === 'done') {
-                    progress.doneObjects += 1
-                    progress.doneBytes += Number(object.sizeBytes || 0)
+                  } else if (result.status === 'done' || result.status === 'skipped') {
+                    hasDoneDestination = true
                   }
+                }
+                if (hasFailedDestination) {
+                  progress.failedObjects += 1
+                } else if (hasDoneDestination) {
+                  progress.doneObjects += 1
+                  progress.doneBytes += Number(object.sizeBytes || 0)
                 }
               } finally {
                 progress.percentDone = progress.totalObjects > 0
@@ -250,8 +259,11 @@ export async function processBackupJob(job, logger = console) {
                 semaphore.release()
               }
             })()
-
-            tasks.push(task)
+            inFlight.add(task)
+            task.finally(() => inFlight.delete(task))
+            if (inFlight.size >= Math.max(2, Number(config.BACKUP_CONCURRENCY || 3) * 4)) {
+              await Promise.race(inFlight)
+            }
             await new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(config.BACKUP_CHUNK_STREAM_MS || 50))))
           }
 
@@ -274,7 +286,7 @@ export async function processBackupJob(job, logger = console) {
       })
     }
 
-    await Promise.all(tasks)
+    await Promise.all(inFlight)
 
     if (job.options?.includeRtdb) {
       const snapshot = {

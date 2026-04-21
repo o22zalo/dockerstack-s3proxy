@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto'
 import { db } from '../db.js'
-import { backupRtdbPatch, backupRtdbSet } from './backupFirebase.js'
+import { backupRtdbDelete, backupRtdbPatch, backupRtdbSet } from './backupFirebase.js'
 
 const RTDB_FLUSH_INTERVAL_MS = 2000
 const syncTimers = new Map()
@@ -20,10 +20,10 @@ const stmts = {
   updateJobStatus: db.prepare(`
     UPDATE backup_jobs
     SET status=@status,
-        started_at=COALESCE(@started_at, started_at),
-        completed_at=COALESCE(@completed_at, completed_at),
-        last_error=COALESCE(@last_error, last_error),
-        resume_token=COALESCE(@resume_token, resume_token)
+        started_at=@started_at,
+        completed_at=@completed_at,
+        last_error=@last_error,
+        resume_token=@resume_token
     WHERE job_id=@job_id
   `),
   updateJobProgress: db.prepare(`
@@ -74,6 +74,13 @@ const stmts = {
         error=@error,
         attempt_count=@attempt_count,
         last_attempt_at=@last_attempt_at
+    WHERE job_id=@job_id AND account_id=@account_id AND backend_key=@backend_key AND destination_type=@destination_type
+  `),
+  markLedgerSkipped: db.prepare(`
+    UPDATE backup_ledger
+    SET status='skipped',
+        error=@error,
+        completed_at=@completed_at
     WHERE job_id=@job_id AND account_id=@account_id AND backend_key=@backend_key AND destination_type=@destination_type
   `),
   getPendingLedgerEntries: db.prepare(`
@@ -159,13 +166,20 @@ function ensureBackupRtdbWarning() {
 }
 
 export async function updateJobStatus(jobId, status, extras = {}) {
+  const current = stmts.getJobById.get(jobId)
+  const startedAt = Object.prototype.hasOwnProperty.call(extras, 'startedAt') ? extras.startedAt : current?.started_at ?? null
+  const completedAt = Object.prototype.hasOwnProperty.call(extras, 'completedAt') ? extras.completedAt : current?.completed_at ?? null
+  const lastError = Object.prototype.hasOwnProperty.call(extras, 'lastError') ? extras.lastError : current?.last_error ?? null
+  const resumeToken = Object.prototype.hasOwnProperty.call(extras, 'resumeToken')
+    ? (extras.resumeToken === null ? null : JSON.stringify(extras.resumeToken))
+    : current?.resume_token ?? null
   stmts.updateJobStatus.run({
     job_id: jobId,
     status,
-    started_at: extras.startedAt ?? null,
-    completed_at: extras.completedAt ?? null,
-    last_error: extras.lastError ?? null,
-    resume_token: extras.resumeToken ? JSON.stringify(extras.resumeToken) : null,
+    started_at: startedAt,
+    completed_at: completedAt,
+    last_error: lastError,
+    resume_token: resumeToken,
   })
   await backupRtdbPatch(`jobs/${jobId}`, {
     status,
@@ -210,6 +224,7 @@ export async function syncProgressToRtdb(jobId, snapshot) {
 export function upsertLedgerEntry(entry) { stmts.upsertLedger.run(entry) }
 export function markLedgerDone(entry) { stmts.markLedgerDone.run(entry) }
 export function markLedgerFailed(entry) { stmts.markLedgerFailed.run(entry) }
+export function markLedgerSkipped(entry) { stmts.markLedgerSkipped.run(entry) }
 export function getPendingLedgerEntries(jobId, { limit = 100, afterId = 0 } = {}) {
   return stmts.getPendingLedgerEntries.all({ job_id: jobId, limit, after_id: afterId })
 }
@@ -246,4 +261,5 @@ export function listLedgerEntries(jobId, { limit = 200, offset = 0 } = {}) {
 export function deleteJobById(jobId) {
   stmts.deleteLedgerByJob.run({ job_id: jobId })
   stmts.deleteJob.run({ job_id: jobId })
+  backupRtdbDelete(`jobs/${jobId}`).catch(() => {})
 }

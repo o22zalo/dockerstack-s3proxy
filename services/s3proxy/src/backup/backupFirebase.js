@@ -54,3 +54,14 @@ export async function backupRtdbSet(path, value) {
   }
   return res.json().catch(() => null)
 }
+
+export async function backupRtdbDelete(path) {
+  const url = buildUrl(path)
+  if (!url) return null
+  const res = await fetch(url, { method: 'DELETE' })
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    throw new Error(`backup RTDB DELETE ${path} failed: ${res.status} ${text}`)
+  }
+  return null
+}

@@ -1,7 +1,7 @@
 import { GetObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3'
 import { createS3Client } from '../inventoryScanner.js'
 import config from '../config.js'
-import { findLedgerByEtag, markLedgerDone, markLedgerFailed } from './backupJournal.js'
+import { findLedgerByEtag, markLedgerDone, markLedgerFailed, markLedgerSkipped } from './backupJournal.js'
 
 function toPlainEtag(value) {
   return String(value || '').replace(/"/g, '')
@@ -30,18 +30,42 @@ export async function copyObjectToDestination({
       const contentType = head.ContentType || 'application/octet-stream'
       const maxAllowedBytes = Math.max(1, Number(config.BACKUP_MAX_OBJECT_SIZE_MB || 512)) * 1024 * 1024
       if (sizeBytes > maxAllowedBytes) {
+        markLedgerSkipped({
+          job_id: jobId,
+          account_id: account.account_id,
+          backend_key: backendKey,
+          destination_type: destinationType,
+          error: `object_too_large:${sizeBytes}`,
+          completed_at: Date.now(),
+        })
         return { status: 'skipped', error: `object_too_large:${sizeBytes}` }
       }
 
       if (options.skipExistingByEtag && etag) {
         const existing = findLedgerByEtag(jobId, account.account_id, backendKey, destinationType, etag)
         if (existing) {
+          markLedgerSkipped({
+            job_id: jobId,
+            account_id: account.account_id,
+            backend_key: backendKey,
+            destination_type: destinationType,
+            error: 'skip_existing_etag',
+            completed_at: Date.now(),
+          })
           return { status: 'skipped', etag, sizeBytes, dstKey: existing.dst_key, dstLocation: existing.dst_location }
         }
       }
 
       if (options.dryRun) {
-        return { status: 'done', etag, sizeBytes, dstKey: null, dstLocation: 'dry-run' }
+        markLedgerSkipped({
+          job_id: jobId,
+          account_id: account.account_id,
+          backend_key: backendKey,
+          destination_type: destinationType,
+          error: 'dry_run',
+          completed_at: Date.now(),
+        })
+        return { status: 'skipped', etag, sizeBytes, dstKey: null, dstLocation: 'dry-run' }
       }
 
       const bodyRes = await client.send(new GetObjectCommand({ Bucket: account.bucket, Key: backendKey }))
@@ -76,6 +100,14 @@ export async function copyObjectToDestination({
     } catch (err) {
       const statusCode = Number(err?.$metadata?.httpStatusCode || err?.statusCode || 0)
       if (statusCode === 404 || err?.name === 'NotFound') {
+        markLedgerSkipped({
+          job_id: jobId,
+          account_id: account.account_id,
+          backend_key: backendKey,
+          destination_type: destinationType,
+          error: 'source_object_not_found',
+          completed_at: Date.now(),
+        })
         return { status: 'skipped', error: 'source_object_not_found' }
       }
       markLedgerFailed({

@@ -1,22 +1,19 @@
-# Backup System Implementation Report (Round 3)
+# Backup System Implementation Report (Round 4)
 
-## Mức độ khớp với review
+## Đã xử lý thêm các lỗi trọng yếu
 
-- ✅ Đã fix auth cho toàn bộ `/admin/backup/*`.
-- ✅ Đã sửa builder URL của backup RTDB để dùng đúng format khi `BACKUP_RTDB_URL` kết thúc bằng `/backup.json?auth=...`.
-- ✅ Đã chuyển flow backup sang **scan inventory thật từ backend S3** (`scanAccountInventory`) thay vì chỉ đọc metadata SQLite.
-- ✅ Có `resume_token` thực tế theo `accountId + continuationToken + lastKey` trong quá trình scan.
-- ✅ RTDB backup sync chuyển sang **best effort** (log warning, không làm fail toàn job).
-- ✅ Ledger đã tránh ghi đè sai trong multi-account/multi-destination bằng unique key theo `(job_id, account_id, backend_key, destination_type)`.
-- ✅ Đã thực thi runtime options `BACKUP_MAX_OBJECT_SIZE_MB`, `dryRun`, `includeRtdb`.
-- ✅ Progress đã cập nhật theo từng object (`currentAccountId`, `currentKey`, `percentDone`).
-- ✅ API trả job đã sanitize secret trong `destination_config`.
-- ✅ Route create job trả lỗi 400 nếu destination type không support.
-- ✅ 404 nguồn trong worker xử lý thành `skipped`.
-- ✅ Đã thêm health/metrics/validate-env cho backup ở mức cơ bản.
+- ✅ Pause/cancel theo hướng DB-driven tốt hơn cho kiến trúc tách container (worker kiểm tra trạng thái job trong DB khi chạy).
+- ✅ Không còn ghi đè `resume_token` khi pause.
+- ✅ `updateJobStatus` cho phép clear thật sự các trường `last_error`, `completed_at`, `resume_token` (không giữ rác qua lần chạy).
+- ✅ Bổ sung `markLedgerSkipped` và phản ánh chuẩn các case skipped/dryRun/404/object-too-large.
+- ✅ Sửa progress để không bị cộng trùng khi có nhiều destination (count theo source-object).
+- ✅ Giảm rủi ro memory: không giữ mảng `tasks[]` vô hạn, dùng `inFlight Set` + `Promise.race` để giới hạn.
+- ✅ App API trả 501 rõ ràng cho các flow restore/migrate/replace đang stub.
+- ✅ Đồng bộ cấu hình `BACKUP_ENABLED` của app theo `BACKUP_SYSTEM_ENABLE` để tránh báo sai trạng thái.
+- ✅ Destination contract mở rộng thêm các method nền tảng (`read/exists/listKeys/delete/getMetadata`) cho local/s3 (mock ở mức not implemented).
 
-## Phần còn lại chưa full-plan
+## Trạng thái full-plan hiện tại
 
-- ⏳ `restoreManager` và `backendReplacer` mới dừng ở mức contract/stub.
-- ⏳ Destinations `gdrive`, `onedrive`, `zip` chưa hoàn tất production logic.
-- ⏳ Chưa có locking phân tán cứng (leader election) nếu scale nhiều `backup-worker` instance.
+- ⏳ Chưa full implementation business logic cho restore/backend replacement (mới trả 501/stub rõ ràng).
+- ⏳ Chưa hoàn tất destinations `gdrive`, `onedrive`, `zip`.
+- ⏳ Chưa có distributed lock/leader election cứng khi scale nhiều worker instance.
