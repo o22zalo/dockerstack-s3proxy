@@ -5,24 +5,28 @@
 
 ## Overview
 
-Đây là bộ 4 prompts để fix bugs và cải tiến hệ thống backup của `dockerstack-s3proxy`. Tất cả prompts được thiết kế để agents thực thi **tuần tự, không song song**.
+Đây là bộ 6 prompts để fix bugs và cải tiến hệ thống backup của `dockerstack-s3proxy`. Tất cả prompts được thiết kế để agents thực thi **tuần tự, không song song**.
 
 ```
-SPRINT 1 → SPRINT 2 → SPRINT 3 → SPRINT 4
+SPRINT 1 → SPRINT 2 → SPRINT 3 → SPRINT 4 → SPRINT 5 → SPRINT 6
 ```
 
 Mỗi sprint có prerequisite là sprint trước đã complete. Không được skip sprint.
+
+> Sprint 1–4 đã được thực thi và có implementation report. Agents mới chỉ cần chạy từ **Sprint 5**.
 
 ---
 
 ## Thứ tự thực hiện và scope
 
-| Sprint | File | Scope | Prerequisite | Priority |
-|---|---|---|---|---|
-| Sprint 1 | `SPRINT1_PROMPT_P0_BUGS.md` | BUG-1, BUG-2, BUG-3 | Không có | 🔴 Critical |
-| Sprint 2 | `SPRINT2_PROMPT_P1_BUGS.md` | BUG-4, BUG-5, BUG-6 | Sprint 1 done | 🟠 Important |
-| Sprint 3 | `SPRINT3_PROMPT_P2_PERF.md` | BUG-7, BUG-8, BUG-9 + PERF-1~4 | Sprint 2 done | 🟡 Moderate |
-| Sprint 4 | `SPRINT4_PROMPT_ADMIN_UI.md` | Admin UI hoàn thiện | Sprint 3 done | 🟢 Enhancement |
+| Sprint | File | Scope | Prerequisite | Priority | Trạng thái |
+|---|---|---|---|---|---|
+| Sprint 1 | `SPRINT1_PROMPT_P0_BUGS.md` | BUG-1, BUG-2, BUG-3 | Không có | 🔴 Critical | ✅ Done |
+| Sprint 2 | `SPRINT2_PROMPT_P1_BUGS.md` | BUG-4, BUG-5, BUG-6 | Sprint 1 done | 🟠 Important | ✅ Done |
+| Sprint 3 | `SPRINT3_PROMPT_P2_PERF.md` | BUG-7, BUG-8, BUG-9 + PERF-1~4 | Sprint 2 done | 🟡 Moderate | ✅ Done |
+| Sprint 4 | `SPRINT4_PROMPT_ADMIN_UI.md` | Admin UI hoàn thiện | Sprint 3 done | 🟢 Enhancement | ✅ Done |
+| Sprint 5 | `SPRINT5_PROMPT_P0_REMAINING.md` | BUG-10, BUG-11 | Sprint 4 done | 🔴 Critical | ⬜ TODO |
+| Sprint 6 | `SPRINT6_PROMPT_P1_IMPROVEMENTS.md` | FIX-1, FIX-2 | Sprint 5 done | 🟠 Important | ⬜ TODO |
 
 ---
 
@@ -56,7 +60,7 @@ Mỗi sprint có prerequisite là sprint trước đã complete. Không được
 | PERF-3 | Throttle updateJobProgress — không gọi mỗi object | `backupManager.js` |
 | PERF-4 | `migrationObjectsTotal` metric chưa được increment | `backendReplacer.js` |
 
-### Sprint 4 — Enhancement
+### Sprint 4 — Enhancement ✅ Done
 
 | Item | Mô tả | Files bị ảnh hưởng |
 |---|---|---|
@@ -64,6 +68,20 @@ Mỗi sprint có prerequisite là sprint trước đã complete. Không được
 | UI-2 | Jobs table: progress bar, auto-refresh, download link | `admin-ui.html` |
 | UI-3 | Backend health panel mới | `admin-ui.html` |
 | UI-4 | Restore panel mới | `admin-ui.html` |
+
+### Sprint 5 — Critical (phát hiện sau review post Sprint 1–4)
+
+| Bug | Mô tả | Files bị ảnh hưởng |
+|---|---|---|
+| BUG-10 | `replaceBackendConfig` và `rollbackMigration` không gọi `reloadAccountsFromSQLite()` sau `upsertAccount()` → in-memory account pool dùng credentials cũ sau khi replace | `backup/backendReplacer.js` |
+| BUG-11 | `/api/cron-jobs/:jobId/run` thiếu auth → bất kỳ request nào trigger được cron job; test fail từ Sprint 1 | `routes/admin.js` |
+
+### Sprint 6 — Important (cải tiến kỹ thuật)
+
+| Item | Mô tả | Files bị ảnh hưởng |
+|---|---|---|
+| FIX-1 | `s3Dest.upload()` buffer objects ≤5MB vào RAM thay vì stream → RAM spike với concurrent backup | `backup/destinations/s3Dest.js` |
+| FIX-2 | `startRestoreJob()` không persist vào `backup_jobs` → không track được lịch sử restore | `backup/restoreManager.js` |
 
 ---
 
@@ -105,25 +123,29 @@ Mỗi sprint có danh sách grep commands để verify. Chạy tất cả và pa
 | Sprint 2 | `docs/backup-deployment.md`, `docs/SPRINT2_IMPLEMENTATION_REPORT.md` |
 | Sprint 3 | `docs/BACKUP_API_REFERENCE.md`, `docs/SPRINT3_IMPLEMENTATION_REPORT.md` |
 | Sprint 4 | `docs/SPRINT4_IMPLEMENTATION_REPORT.md` |
+| Sprint 5 | `docs/SPRINT5_IMPLEMENTATION_REPORT.md` |
+| Sprint 6 | `docs/SPRINT6_IMPLEMENTATION_REPORT.md` |
 
 ---
 
 ## Files được sửa đổi
 
-| File | Sprint 1 | Sprint 2 | Sprint 3 | Sprint 4 |
-|---|---|---|---|---|
-| `src/backup/restoreManager.js` | ✏️ BUG-1, BUG-2 | ✏️ BUG-6 | ✏️ BUG-7 | — |
-| `src/backup/backendReplacer.js` | ✏️ BUG-1, BUG-2 | — | ✏️ PERF-4 | — |
-| `src/routes/backup.js` | ✏️ BUG-2, BUG-3 | — | ✏️ BUG-9 | — |
-| `src/backup/backupManager.js` | ✏️ BUG-3 | ✏️ BUG-4 | ✏️ PERF-1, PERF-3 | — |
-| `src/backup/backupJournal.js` | ✏️ BUG-3 | — | ✏️ PERF-1 | — |
-| `src/backup/destinations/gdriveDest.js` | — | — | ✏️ BUG-7 | — |
-| `src/config.js` | — | ✏️ BUG-4 | — | — |
-| `src/index.js` | — | ✏️ BUG-5 | — | — |
-| `src/backupRunner.js` | — | ✏️ BUG-5 | — | — |
-| `src/db.js` | — | ✏️ WAL check | ✏️ PERF-2 | — |
-| `.env.example` | — | ✏️ BUG-4 | — | — |
-| `src/admin-ui.html` | — | — | — | ✏️ UI-1~4 |
+| File | Sprint 1 | Sprint 2 | Sprint 3 | Sprint 4 | Sprint 5 | Sprint 6 |
+|---|---|---|---|---|---|---|
+| `src/backup/restoreManager.js` | ✏️ BUG-1, BUG-2 | ✏️ BUG-6 | ✏️ BUG-7 | — | — | ✏️ FIX-2 |
+| `src/backup/backendReplacer.js` | ✏️ BUG-1, BUG-2 | — | ✏️ PERF-4 | — | ✏️ BUG-10 | — |
+| `src/routes/admin.js` | — | — | — | — | ✏️ BUG-11 | — |
+| `src/routes/backup.js` | ✏️ BUG-2, BUG-3 | — | ✏️ BUG-9 | — | — | — |
+| `src/backup/backupManager.js` | ✏️ BUG-3 | ✏️ BUG-4 | ✏️ PERF-1, PERF-3 | — | — | — |
+| `src/backup/backupJournal.js` | ✏️ BUG-3 | — | ✏️ PERF-1 | — | — | — |
+| `src/backup/destinations/gdriveDest.js` | — | — | ✏️ BUG-7 | — | — | — |
+| `src/backup/destinations/s3Dest.js` | — | — | — | — | — | ✏️ FIX-1 |
+| `src/config.js` | — | ✏️ BUG-4 | — | — | — | — |
+| `src/index.js` | — | ✏️ BUG-5 | — | — | — | — |
+| `src/backupRunner.js` | — | ✏️ BUG-5 | — | — | — | — |
+| `src/db.js` | — | ✏️ WAL check | ✏️ PERF-2 | — | — | — |
+| `.env.example` | — | ✏️ BUG-4 | — | — | — | — |
+| `src/admin-ui.html` | — | — | — | ✏️ UI-1~4 | — | — |
 
 ---
 
@@ -142,12 +164,14 @@ Mỗi file prompt có cấu trúc:
 
 ## Thời gian ước tính
 
-| Sprint | Ước tính (1 agent) |
-|---|---|
-| Sprint 1 | 30-60 phút |
-| Sprint 2 | 20-40 phút |
-| Sprint 3 | 20-40 phút |
-| Sprint 4 | 45-90 phút |
+| Sprint | Ước tính (1 agent) | Trạng thái |
+|---|---|---|
+| Sprint 1 | 30-60 phút | ✅ Done |
+| Sprint 2 | 20-40 phút | ✅ Done |
+| Sprint 3 | 20-40 phút | ✅ Done |
+| Sprint 4 | 45-90 phút | ✅ Done |
+| Sprint 5 | 15-25 phút | ⬜ TODO |
+| Sprint 6 | 20-35 phút | ⬜ TODO |
 
 ---
 
