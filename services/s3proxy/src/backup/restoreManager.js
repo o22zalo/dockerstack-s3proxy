@@ -94,7 +94,7 @@ export async function startRestoreJob({
         continue
       }
 
-      const readStream = await sourceDest.read(entry.dst_key)
+      const readStream = await sourceDest.read(entry.dst_key, { dstLocation: entry.dst_location })
       const contentType = entry.content_type || 'application/octet-stream'
       const sizeBytes = Number(entry.src_size_bytes || 0)
       const client = getOrCreateClient(targetAccount)
@@ -177,7 +177,7 @@ export async function verifyRestoreIntegrity(jobId, sourceDestination) {
   for (const entry of doneEntries) {
     if (!sourceDestination) break
     try {
-      const meta = await sourceDestination.getMetadata(entry.dst_key)
+      const meta = await sourceDestination.getMetadata(entry.dst_key, { dstLocation: entry.dst_location })
       if (entry.src_etag && meta.etag && entry.src_etag !== meta.etag) {
         mismatches.push({
           backendKey: entry.backend_key,

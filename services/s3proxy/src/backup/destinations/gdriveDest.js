@@ -12,6 +12,12 @@ export class GDriveDestination {
     this._keyToFileId = new Map()
   }
 
+  static extractFileId(dstLocation) {
+    if (!dstLocation) return null
+    const match = String(dstLocation).match(/^gdrive:\/\/[^/]+\/(.+)$/)
+    return match ? match[1] : null
+  }
+
   async _getToken() {
     if (this.tokenRefreshFn) {
       this.accessToken = await this.tokenRefreshFn(this.accessToken)
@@ -75,10 +81,39 @@ export class GDriveDestination {
     }
   }
 
-  async read(key) {
+  async _findFileIdByDescription(key) {
     const token = await this._getToken()
-    const fileId = this._keyToFileId.get(key)
-    if (!fileId) throw new Error(`GDrive: fileId not found for key: ${key}`)
+    const params = new URLSearchParams({
+      q: `'${this.folderId}' in parents and description='${key}' and trashed=false`,
+      fields: 'files(id,description)',
+      pageSize: '1',
+    })
+
+    try {
+      const res = await fetch(`${GDRIVE_FILES_BASE}?${params}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) return null
+      const data = await res.json()
+      const file = data.files?.[0]
+      if (file?.id) {
+        this._keyToFileId.set(key, file.id)
+        return file.id
+      }
+    } catch {
+      // ignore
+    }
+    return null
+  }
+
+  async read(key, { dstLocation = null } = {}) {
+    const token = await this._getToken()
+    let fileId = this._keyToFileId.get(key)
+    if (!fileId && dstLocation) fileId = GDriveDestination.extractFileId(dstLocation)
+    if (!fileId) fileId = await this._findFileIdByDescription(key)
+    if (!fileId) throw new Error(`GDrive: fileId not found for key: ${key}. Provide dstLocation or ensure file exists.`)
+
+    this._keyToFileId.set(key, fileId)
     const res = await fetch(`${GDRIVE_FILES_BASE}/${fileId}?alt=media`, {
       headers: { Authorization: `Bearer ${token}` },
     })
@@ -86,8 +121,17 @@ export class GDriveDestination {
     return res.body
   }
 
-  async exists(key) {
-    return this._keyToFileId.has(key)
+  async exists(key, { dstLocation = null } = {}) {
+    if (this._keyToFileId.has(key)) return true
+    if (dstLocation) {
+      const fileId = GDriveDestination.extractFileId(dstLocation)
+      if (fileId) {
+        this._keyToFileId.set(key, fileId)
+        return true
+      }
+    }
+    const found = await this._findFileIdByDescription(key)
+    return Boolean(found)
   }
 
   async * listKeys(prefix = '') {
@@ -126,10 +170,14 @@ export class GDriveDestination {
     this._keyToFileId.delete(key)
   }
 
-  async getMetadata(key) {
+  async getMetadata(key, { dstLocation = null } = {}) {
     const token = await this._getToken()
-    const fileId = this._keyToFileId.get(key)
-    if (!fileId) throw new Error(`GDrive: fileId not found for key: ${key}`)
+    let fileId = this._keyToFileId.get(key)
+    if (!fileId && dstLocation) fileId = GDriveDestination.extractFileId(dstLocation)
+    if (!fileId) fileId = await this._findFileIdByDescription(key)
+    if (!fileId) throw new Error(`GDrive: fileId not found for key: ${key}. Provide dstLocation or ensure file exists.`)
+
+    this._keyToFileId.set(key, fileId)
     const res = await fetch(`${GDRIVE_FILES_BASE}/${fileId}?fields=id,size,mimeType`, {
       headers: { Authorization: `Bearer ${token}` },
     })

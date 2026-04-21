@@ -243,6 +243,11 @@ export async function syncProgressToRtdb(jobId, snapshot) {
 }
 
 export function upsertLedgerEntry(entry) { stmts.upsertLedger.run(entry) }
+export const batchUpsertLedgerEntries = db.transaction((entries = []) => {
+  for (const entry of entries) {
+    stmts.upsertLedger.run(entry)
+  }
+})
 export function markLedgerDone(entry) { stmts.markLedgerDone.run(entry) }
 export function markLedgerFailed(entry) { stmts.markLedgerFailed.run(entry) }
 export function markLedgerSkipped(entry) { stmts.markLedgerSkipped.run(entry) }
