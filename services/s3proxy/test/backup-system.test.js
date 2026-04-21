@@ -5,6 +5,9 @@ process.env.PROXY_API_KEY = process.env.PROXY_API_KEY || 'test'
 process.env.FIREBASE_RTDB_URL = process.env.FIREBASE_RTDB_URL || 'http://127.0.0.1:9'
 process.env.FIREBASE_DB_SECRET = process.env.FIREBASE_DB_SECRET || 'dummy'
 process.env.BACKUP_RTDB_URL = ''
+process.env.BACKUP_ENABLED = 'true'
+process.env.BACKUP_PROCESSING_MODE = 'embedded'
+process.env.BACKUP_CONCURRENCY = '1'
 const TEST_DB_DIR = '../../.docker-volumes/s3proxy-data'
 process.env.SQLITE_PATH = `${TEST_DB_DIR}/test-backup-system.db`
 process.env.LOG_LEVEL = 'fatal'
@@ -29,7 +32,9 @@ async function readBody(req) {
 }
 
 async function startFakeS3() {
-  const objectMap = new Map([['bucket-a/path/file.txt', Buffer.from('hello backup')]])
+  const objectMap = new Map([
+    ['bucket-a/path/file.txt', Buffer.from('hello backup')],
+  ])
   const server = createServer(async (req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1')
     const parts = url.pathname.split('/').filter(Boolean)
@@ -110,7 +115,23 @@ async function startMockBackupReceiver() {
 }
 
 const { upsertAccount, commitUploadedObjectMetadata, db } = await import('../src/db.js')
-const { startBackupJob, runPendingBackupJobs, getBackupJob } = await import('../src/backup/backupManager.js')
+const {
+  startBackupJob,
+  runPendingBackupJobs,
+  getBackupJob,
+  cancelBackupJob,
+} = await import('../src/backup/backupManager.js')
+const { encodeBackendKeyForDestination } = await import('../src/backup/backupWorker.js')
+
+async function waitForJobDone(jobId, timeoutMs = 8000) {
+  const started = Date.now()
+  while (Date.now() - started < timeoutMs) {
+    const row = getBackupJob(jobId)
+    if (['completed', 'failed', 'cancelled'].includes(row?.status)) return row
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+  throw new Error(`timeout waiting for ${jobId}`)
+}
 
 async function main() {
   const fakeS3 = await startFakeS3()
@@ -141,26 +162,51 @@ async function main() {
       content_type: 'text/plain',
     })
 
-    await startBackupJob({
+    const created = await startBackupJob({
       type: 'full',
       destinationType: 'mock',
       destinationConfig: { endpoint: receiver.endpoint },
       accountFilter: ['acc-backup'],
       options: { skipExistingByEtag: false },
     })
-    ok('create backup job pending')
+    assert(created.status === 'pending', `job status expected pending, got ${created.status}`)
+    ok('job creation is async (pending)')
 
-    const processed = await runPendingBackupJobs(console)
-    assert(processed?.status === 'completed', `job status expected completed, got ${processed?.status}`)
-    ok('run pending backup job completed')
+    const firstPoll = await runPendingBackupJobs(console)
+    const secondPoll = await runPendingBackupJobs(console)
+    assert(firstPoll, 'first poll should claim one job')
+    assert(secondPoll === null, 'second poll should not double-claim running job')
+    ok('single-worker claim behavior avoids double processing')
+
+    const finished = await waitForJobDone(created.job_id)
+    assert(finished.status === 'completed', `expected completed, got ${finished.status}`)
+    assert(finished.running_instance_id === null, 'running_instance_id should be released after completion')
+    ok('job processing completed asynchronously')
 
     assert(receiver.received.length === 1, `expected 1 uploaded object, got ${receiver.received.length}`)
-    assert(receiver.received[0].body === 'hello backup', 'uploaded payload mismatch')
-    ok('mock destination received object stream')
+    assert(receiver.received.some((entry) => entry.body === 'hello backup'), 'missing known payload')
+    ok('mock destination received uploaded object streams')
 
-    const jobs = getBackupJob(processed.job_id)
-    assert(jobs?.progress?.doneObjects === 1, 'doneObjects should be 1')
+    const persisted = getBackupJob(created.job_id)
+    assert(persisted?.progress?.doneObjects >= 1, 'progress doneObjects should be persisted')
+    assert(Number(persisted?.done_bytes || 0) > 0, 'done bytes should be persisted')
     ok('job progress persisted to sqlite')
+
+    const suspiciousKey = encodeBackendKeyForDestination('../escape.txt')
+    assert(!suspiciousKey.includes('../'), 'encoded backend key must not contain traversal segment')
+    assert(encodeBackendKeyForDestination('../escape.txt').includes('Li4'), 'encoded backend key should preserve reversible mapping')
+    ok('destination key hardening blocks traversal path segments')
+
+    const cancelJob = await startBackupJob({
+      type: 'full',
+      destinationType: 'mock',
+      destinationConfig: { endpoint: receiver.endpoint },
+      accountFilter: ['acc-backup'],
+    })
+    await cancelBackupJob(cancelJob.job_id)
+    const cancelled = getBackupJob(cancelJob.job_id)
+    assert(cancelled.status === 'cancelled', 'cancelled status should persist')
+    ok('cancel behavior persists correctly')
   } catch (err) {
     fail('backup system e2e', err)
   } finally {

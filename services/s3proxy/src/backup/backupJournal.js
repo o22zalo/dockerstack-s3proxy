@@ -49,7 +49,10 @@ const stmts = {
   getPendingJob: db.prepare("SELECT * FROM backup_jobs WHERE status='pending' ORDER BY created_at ASC LIMIT 1"),
   claimPendingJob: db.prepare(`
     UPDATE backup_jobs
-    SET status='running', started_at=COALESCE(started_at, @started_at)
+    SET status='running',
+        started_at=COALESCE(started_at, @started_at),
+        running_instance_id=@running_instance_id,
+        running_heartbeat_at=@running_heartbeat_at
     WHERE job_id=@job_id AND status='pending'
   `),
   listJobs: db.prepare('SELECT * FROM backup_jobs ORDER BY created_at DESC LIMIT @limit OFFSET @offset'),
@@ -173,7 +176,7 @@ export async function createBackupJob({ type = 'full', destinationType, destinat
 
 function ensureBackupRtdbWarning() {
   if (warnedMissingBackupRtdb) return
-  if (process.env.BACKUP_RTDB_URL || process.env.S3PROXY_BACKUP_RTDB_URL) return
+  if (process.env.BACKUP_RTDB_URL) return
   warnedMissingBackupRtdb = true
   console.warn('[backup] BACKUP_RTDB_URL is empty; progress/status will only persist in SQLite')
 }
@@ -272,10 +275,15 @@ export function findLedgerByEtag(jobId, accountId, backendKey, destinationType, 
 }
 export function getRunningJob() { return normalizeJob(stmts.getRunningJob.get()) }
 export function getPendingJob() { return normalizeJob(stmts.getPendingJob.get()) }
-export function claimNextPendingJob() {
+export function claimNextPendingJob({ instanceId = null, heartbeatAt = Date.now() } = {}) {
   const row = stmts.getPendingJob.get()
   if (!row) return null
-  const changes = stmts.claimPendingJob.run({ job_id: row.job_id, started_at: Date.now() }).changes
+  const changes = stmts.claimPendingJob.run({
+    job_id: row.job_id,
+    started_at: Date.now(),
+    running_instance_id: instanceId,
+    running_heartbeat_at: heartbeatAt,
+  }).changes
   if (changes === 0) return null
   return normalizeJob(stmts.getJobById.get(row.job_id))
 }

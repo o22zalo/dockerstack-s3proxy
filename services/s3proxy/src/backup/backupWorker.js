@@ -7,6 +7,17 @@ function toPlainEtag(value) {
   return String(value || '').replace(/"/g, '')
 }
 
+function encodePathSegment(segment) {
+  return Buffer.from(String(segment), 'utf8').toString('base64url')
+}
+
+export function encodeBackendKeyForDestination(backendKey) {
+  return String(backendKey)
+    .split('/')
+    .map((segment) => encodePathSegment(segment))
+    .join('/')
+}
+
 export async function copyObjectToDestination({
   account,
   backendKey,
@@ -70,7 +81,8 @@ export async function copyObjectToDestination({
 
       const bodyRes = await client.send(new GetObjectCommand({ Bucket: account.bucket, Key: backendKey }))
       const backupDate = new Date().toISOString().slice(0, 10)
-      const dstKey = `backup/${jobId}/${backupDate}/${account.account_id}/${account.bucket}/${backendKey}`
+      const safeBackendKey = encodeBackendKeyForDestination(backendKey)
+      const dstKey = `backup/${jobId}/${backupDate}/${encodePathSegment(account.account_id)}/${encodePathSegment(account.bucket)}/${safeBackendKey}`
       const uploadResult = await destination.upload({
         stream: bodyRes.Body,
         key: dstKey,

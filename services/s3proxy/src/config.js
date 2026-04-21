@@ -35,6 +35,13 @@ function optionalEnvAny(names, defaultValue) {
   return defaultValue
 }
 
+function optionalEnum(name, allowedValues, defaultValue) {
+  const val = optionalEnv(name, defaultValue)
+  if (allowedValues.includes(val)) return val
+  process.stderr.write(`[config] WARNING: ${name}="${val}" is not valid, using default ${defaultValue}\n`)
+  return defaultValue
+}
+
 function optionalFloat(name, defaultValue) {
   const val = process.env[name];
   if (!val || val.trim() === "") return defaultValue;
@@ -168,12 +175,13 @@ const config = Object.freeze({
   CRON_KEEPALIVE_PREFIX: optionalEnv("CRON_KEEPALIVE_PREFIX", "_s3proxy_keepalive"),
   CRON_KEEPALIVE_CONTENT_PREFIX: optionalEnv("CRON_KEEPALIVE_CONTENT_PREFIX", "s3proxy-keepalive"),
   ADMIN_TEST_PREFIX: optionalEnv("ADMIN_TEST_PREFIX", "_s3proxy_probe"),
-  BACKUP_ENABLED: optionalBoolAny(["BACKUP_ENABLED", "S3PROXY_BACKUP_ENABLED"], false),
-  BACKUP_RTDB_URL: optionalEnvAny(["BACKUP_RTDB_URL", "S3PROXY_BACKUP_RTDB_URL"], ""),
-  BACKUP_CONCURRENCY: optionalIntAny(["BACKUP_CONCURRENCY", "S3PROXY_BACKUP_CONCURRENCY"], 3),
-  BACKUP_CHUNK_STREAM_MS: optionalIntAny(["BACKUP_CHUNK_STREAM_MS", "S3PROXY_BACKUP_CHUNK_STREAM_MS"], 50),
-  BACKUP_MAX_OBJECT_SIZE_MB: optionalIntAny(["BACKUP_MAX_OBJECT_SIZE_MB", "S3PROXY_BACKUP_MAX_OBJECT_SIZE_MB"], 512),
-  BACKUP_STALE_JOB_THRESHOLD_MS: optionalIntAny(["BACKUP_STALE_JOB_THRESHOLD_MS", "S3PROXY_BACKUP_STALE_JOB_THRESHOLD_MS"], 30000),
+  BACKUP_ENABLED: optionalBool("BACKUP_ENABLED", false),
+  BACKUP_PROCESSING_MODE: optionalEnum("BACKUP_PROCESSING_MODE", ["disabled", "external", "embedded"], "external"),
+  BACKUP_RTDB_URL: optionalEnv("BACKUP_RTDB_URL", ""),
+  BACKUP_CONCURRENCY: optionalInt("BACKUP_CONCURRENCY", 3),
+  BACKUP_CHUNK_STREAM_MS: optionalInt("BACKUP_CHUNK_STREAM_MS", 50),
+  BACKUP_MAX_OBJECT_SIZE_MB: optionalInt("BACKUP_MAX_OBJECT_SIZE_MB", 512),
+  BACKUP_STALE_JOB_THRESHOLD_MS: optionalInt("BACKUP_STALE_JOB_THRESHOLD_MS", 30000),
 });
 
 export default config;
