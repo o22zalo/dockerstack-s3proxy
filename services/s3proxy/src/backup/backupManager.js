@@ -2,8 +2,10 @@ import config from '../config.js'
 import { getAllAccounts, getAllRoutes } from '../db.js'
 import {
   createBackupJob,
+  deleteJobById,
   getJobById,
   getPendingJob,
+  listLedgerEntries,
   listJobs,
   updateJobProgress,
   updateJobStatus,
@@ -13,6 +15,24 @@ import { createDestination } from './destinations/index.js'
 import { copyObjectToDestination } from './backupWorker.js'
 
 const activeJobs = new Map()
+let managerInterval = null
+
+export function initBackupManager(logger = console, intervalMs = 2000) {
+  if (managerInterval) return { started: false }
+  managerInterval = setInterval(() => {
+    runPendingBackupJobs(logger).catch((err) => {
+      logger?.error?.({ err: err.message }, 'backup manager tick failed')
+    })
+  }, intervalMs)
+  managerInterval.unref?.()
+  return { started: true }
+}
+
+export function stopBackupManager() {
+  if (!managerInterval) return
+  clearInterval(managerInterval)
+  managerInterval = null
+}
 
 function buildSemaphore(max) {
   let count = 0
@@ -53,6 +73,51 @@ export async function cancelBackupJob(jobId) {
     activeJobs.delete(jobId)
   }
   await updateJobStatus(jobId, 'cancelled', { completedAt: Date.now(), lastError: 'cancelled_by_user' })
+}
+
+export async function pauseBackupJob(jobId) {
+  const active = activeJobs.get(jobId)
+  if (active) {
+    active.abortController.abort('paused')
+    activeJobs.delete(jobId)
+  }
+  await updateJobStatus(jobId, 'paused', {
+    resumeToken: { pausedAt: Date.now() },
+    lastError: 'paused_by_user',
+  })
+}
+
+export async function resumeBackupJob(jobId) {
+  const job = getJobById(jobId)
+  if (!job) throw new Error('job_not_found')
+  if (job.status !== 'paused' && job.status !== 'failed' && job.status !== 'cancelled') {
+    return job
+  }
+  await updateJobStatus(jobId, 'pending', { lastError: null })
+  return getJobById(jobId)
+}
+
+export function getJobLiveStatus(jobId) {
+  const persisted = getJobById(jobId)
+  const running = activeJobs.has(jobId)
+  return {
+    ...persisted,
+    live: {
+      running,
+      inMemory: running ? 'active' : 'idle',
+    },
+  }
+}
+
+export function listBackupJobLedger(jobId, options = {}) {
+  return listLedgerEntries(jobId, options)
+}
+
+export function removeBackupJob(jobId) {
+  if (activeJobs.has(jobId)) {
+    throw new Error('job_is_running')
+  }
+  deleteJobById(jobId)
 }
 
 export async function processBackupJob(job, logger = console) {
@@ -142,7 +207,14 @@ export async function processBackupJob(job, logger = console) {
   await updateJobProgress(job.job_id, progress)
 
   if (abortController.signal.aborted) {
-    await updateJobStatus(job.job_id, 'cancelled', { completedAt: Date.now(), lastError: 'cancelled' })
+    const latest = getJobById(job.job_id)
+    if (latest?.status === 'paused') {
+      await updateJobStatus(job.job_id, 'paused', { lastError: latest.last_error ?? 'paused_by_user' })
+    } else if (latest?.status === 'cancelled') {
+      await updateJobStatus(job.job_id, 'cancelled', { completedAt: Date.now(), lastError: latest.last_error ?? 'cancelled' })
+    } else {
+      await updateJobStatus(job.job_id, 'cancelled', { completedAt: Date.now(), lastError: 'cancelled' })
+    }
   } else if (progress.failedObjects > 0) {
     await updateJobStatus(job.job_id, 'failed', { completedAt: Date.now(), lastError: progress.lastError || 'some objects failed' })
   } else {

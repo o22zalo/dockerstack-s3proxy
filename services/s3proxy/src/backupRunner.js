@@ -1,6 +1,6 @@
 import pino from 'pino'
 import config from './config.js'
-import { runPendingBackupJobs } from './backup/backupManager.js'
+import { initBackupManager } from './backup/backupManager.js'
 
 const log = pino({
   level: config.LOG_LEVEL,
@@ -15,18 +15,4 @@ if (!config.BACKUP_ENABLED) {
 }
 
 log.info({ concurrency: config.BACKUP_CONCURRENCY }, 'backup runner started')
-
-async function loop() {
-  try {
-    const job = await runPendingBackupJobs(log)
-    if (job) {
-      log.info({ jobId: job.job_id, status: job.status }, 'backup job processed')
-    }
-  } catch (err) {
-    log.error({ err }, 'backup loop error')
-  }
-
-  setTimeout(loop, 2000)
-}
-
-loop()
+initBackupManager(log, 2000)

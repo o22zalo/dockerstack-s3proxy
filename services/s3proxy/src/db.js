@@ -192,6 +192,35 @@ db.exec(`
     error           TEXT,
     completed_at    INTEGER
   );
+
+  CREATE TABLE IF NOT EXISTS backend_migrations (
+    migration_id    TEXT PRIMARY KEY,
+    type            TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'pending',
+    source_account_id TEXT NOT NULL,
+    target_account_id TEXT NOT NULL,
+    created_at      INTEGER NOT NULL,
+    started_at      INTEGER,
+    completed_at    INTEGER,
+    total_objects   INTEGER NOT NULL DEFAULT 0,
+    done_objects    INTEGER NOT NULL DEFAULT 0,
+    failed_objects  INTEGER NOT NULL DEFAULT 0,
+    rollback_json   TEXT,
+    options_json    TEXT NOT NULL DEFAULT '{}'
+  );
+
+  CREATE TABLE IF NOT EXISTS backend_migration_ledger (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    migration_id    TEXT NOT NULL REFERENCES backend_migrations(migration_id),
+    encoded_key     TEXT NOT NULL,
+    object_key      TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'pending',
+    src_etag        TEXT,
+    dst_etag        TEXT,
+    attempt_count   INTEGER NOT NULL DEFAULT 0,
+    error           TEXT,
+    completed_at    INTEGER
+  );
 `)
 
 ensureColumn('routes', 'backend_key', "backend_key TEXT NOT NULL DEFAULT ''")
@@ -286,6 +315,7 @@ db.exec(`
   CREATE UNIQUE INDEX IF NOT EXISTS idx_backup_ledger_job_backend ON backup_ledger(job_id, backend_key);
   CREATE INDEX IF NOT EXISTS idx_backup_ledger_job_status ON backup_ledger(job_id, status);
   CREATE INDEX IF NOT EXISTS idx_backup_jobs_status_created ON backup_jobs(status, created_at);
+  CREATE INDEX IF NOT EXISTS idx_mig_ledger_status ON backend_migration_ledger(migration_id, status);
 `)
 
 function isUsageCounted(route) {

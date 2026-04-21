@@ -2,6 +2,11 @@ import { randomUUID } from 'crypto'
 import { db } from '../db.js'
 import { backupRtdbPatch, backupRtdbSet } from './backupFirebase.js'
 
+const RTDB_FLUSH_INTERVAL_MS = 2000
+const syncTimers = new Map()
+const pendingProgress = new Map()
+let warnedMissingBackupRtdb = false
+
 const stmts = {
   createJob: db.prepare(`
     INSERT INTO backup_jobs (
@@ -77,6 +82,14 @@ const stmts = {
     WHERE job_id=@job_id AND account_id=@account_id AND backend_key=@backend_key AND src_etag=@etag AND status='done'
     LIMIT 1
   `),
+  deleteJob: db.prepare('DELETE FROM backup_jobs WHERE job_id=@job_id'),
+  deleteLedgerByJob: db.prepare('DELETE FROM backup_ledger WHERE job_id=@job_id'),
+  listLedgerByJob: db.prepare(`
+    SELECT * FROM backup_ledger
+    WHERE job_id=@job_id
+    ORDER BY id DESC
+    LIMIT @limit OFFSET @offset
+  `),
 }
 
 function parseJson(value, fallback) {
@@ -129,6 +142,13 @@ export async function createBackupJob({ type = 'full', destinationType, destinat
   return getJobById(jobId)
 }
 
+function ensureBackupRtdbWarning() {
+  if (warnedMissingBackupRtdb) return
+  if (process.env.BACKUP_RTDB_URL || process.env.S3PROXY_BACKUP_RTDB_URL) return
+  warnedMissingBackupRtdb = true
+  console.warn('[backup] BACKUP_RTDB_URL is empty; progress/status will only persist in SQLite')
+}
+
 export async function updateJobStatus(jobId, status, extras = {}) {
   stmts.updateJobStatus.run({
     job_id: jobId,
@@ -156,7 +176,24 @@ export async function updateJobProgress(jobId, progress) {
     done_bytes: progress.doneBytes ?? 0,
     last_error: progress.lastError ?? null,
   })
-  await backupRtdbPatch(`backup/jobs/${jobId}/progress`, progress)
+  ensureBackupRtdbWarning()
+  await syncProgressToRtdb(jobId, progress)
+}
+
+export async function syncProgressToRtdb(jobId, snapshot) {
+  pendingProgress.set(jobId, snapshot)
+  if (syncTimers.has(jobId)) return
+
+  syncTimers.set(jobId, setTimeout(async () => {
+    const payload = pendingProgress.get(jobId)
+    pendingProgress.delete(jobId)
+    syncTimers.delete(jobId)
+    try {
+      await backupRtdbPatch(`backup/jobs/${jobId}/progress`, payload)
+    } catch (err) {
+      console.warn(`[backup] failed syncing progress to RTDB for job ${jobId}: ${err.message}`)
+    }
+  }, RTDB_FLUSH_INTERVAL_MS))
 }
 
 export function upsertLedgerEntry(entry) { stmts.upsertLedger.run(entry) }
@@ -176,4 +213,13 @@ export function listJobs({ limit = 20, offset = 0, status } = {}) {
     ? stmts.listJobsByStatus.all({ status, limit, offset })
     : stmts.listJobs.all({ limit, offset })
   return rows.map(normalizeJob)
+}
+
+export function listLedgerEntries(jobId, { limit = 200, offset = 0 } = {}) {
+  return stmts.listLedgerByJob.all({ job_id: jobId, limit, offset })
+}
+
+export function deleteJobById(jobId) {
+  stmts.deleteLedgerByJob.run({ job_id: jobId })
+  stmts.deleteJob.run({ job_id: jobId })
 }

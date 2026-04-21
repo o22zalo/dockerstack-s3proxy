@@ -1,5 +1,6 @@
 import { GetObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3'
 import { createS3Client } from '../inventoryScanner.js'
+import config from '../config.js'
 import { findLedgerByEtag, markLedgerDone, markLedgerFailed } from './backupJournal.js'
 
 function toPlainEtag(value) {
@@ -26,6 +27,10 @@ export async function copyObjectToDestination({
       const etag = toPlainEtag(head.ETag)
       const sizeBytes = Number(head.ContentLength || 0)
       const contentType = head.ContentType || 'application/octet-stream'
+      const maxAllowedBytes = Math.max(1, Number(config.BACKUP_MAX_OBJECT_SIZE_MB || 512)) * 1024 * 1024
+      if (sizeBytes > maxAllowedBytes) {
+        return { status: 'skipped', error: `object_too_large:${sizeBytes}` }
+      }
 
       if (options.skipExistingByEtag && etag) {
         const existing = findLedgerByEtag(jobId, account.account_id, backendKey, etag)

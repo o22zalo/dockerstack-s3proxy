@@ -138,6 +138,7 @@
       <button class="tab-btn" data-tab="public">Public Bucket Proxy</button>
       <button class="tab-btn" data-tab="all-files">Tất cả file</button>
       <button class="tab-btn" data-tab="runtime">Import / Export Runtime</button>
+      <button class="tab-btn" data-tab="backup">Backup</button>
       <button class="tab-btn" data-tab="logs">Kết quả / thông báo</button>
     </div>
   </div>
@@ -408,6 +409,37 @@
         <button id="runtimeImportBtn" class="secondary">Import runtime JSON</button>
       </div>
       <pre id="runtimeIoLog">(chưa thao tác)</pre>
+    </div>
+  </section>
+
+  <section class="tab-panel" id="tab-backup">
+    <div class="card stack">
+      <div class="section-head">
+        <div>
+          <h2>Backup jobs</h2>
+          <div class="sub">Tạo / theo dõi / pause / resume job backup trực tiếp từ Admin UI.</div>
+        </div>
+      </div>
+      <form id="backupForm">
+        <select id="backupDestinationType">
+          <option value="local">local</option>
+          <option value="mock">mock</option>
+          <option value="s3">s3</option>
+        </select>
+        <input id="backupAccountFilter" placeholder="accountFilter CSV (optional)" />
+        <textarea id="backupDestinationConfig" class="span2" placeholder='destinationConfig JSON'>{"rootDir":"/backup-data"}</textarea>
+        <button type="submit" id="backupCreateBtn">Tạo backup job</button>
+      </form>
+      <div class="actions">
+        <button id="backupRefreshBtn" class="secondary">Refresh jobs</button>
+      </div>
+      <div class="table-wrap">
+        <table class="responsive-table">
+          <thead><tr><th>Job ID</th><th>Status</th><th>Type</th><th>Progress</th><th>Action</th></tr></thead>
+          <tbody id="backupJobsBody"></tbody>
+        </table>
+      </div>
+      <pre id="backupLog">(chưa có dữ liệu backup)</pre>
     </div>
   </section>
 
@@ -2064,10 +2096,100 @@ testAllBtn.addEventListener('click', async () => {
   }
 })
 
+const backupForm = document.getElementById('backupForm')
+const backupDestinationType = document.getElementById('backupDestinationType')
+const backupAccountFilter = document.getElementById('backupAccountFilter')
+const backupDestinationConfig = document.getElementById('backupDestinationConfig')
+const backupJobsBody = document.getElementById('backupJobsBody')
+const backupLog = document.getElementById('backupLog')
+const backupRefreshBtn = document.getElementById('backupRefreshBtn')
+const backupCreateBtn = document.getElementById('backupCreateBtn')
+
+async function loadBackupJobs() {
+  try {
+    const data = await api('/admin/backup/jobs')
+    const jobs = Array.isArray(data.jobs) ? data.jobs : []
+    if (!jobs.length) {
+      backupJobsBody.innerHTML = '<tr><td colspan="5" class="hint">Chưa có backup job.</td></tr>'
+      backupLog.textContent = 'Chưa có backup job.'
+      return
+    }
+    backupJobsBody.innerHTML = jobs.map((job) => {
+      const progress = `${job?.progress?.doneObjects || 0}/${job?.progress?.totalObjects || 0}`
+      return `
+      <tr>
+        <td data-label="Job ID">${job.job_id}</td>
+        <td data-label="Status">${job.status}</td>
+        <td data-label="Type">${job.destination_type}</td>
+        <td data-label="Progress">${progress}</td>
+        <td data-label="Action" class="actions">
+          <button data-job-action="pause" data-job-id="${job.job_id}" class="warn">Pause</button>
+          <button data-job-action="resume" data-job-id="${job.job_id}" class="secondary">Resume</button>
+          <button data-job-action="cancel" data-job-id="${job.job_id}" class="danger">Cancel</button>
+        </td>
+      </tr>`
+    }).join('')
+    backupLog.textContent = JSON.stringify(jobs, null, 2)
+  } catch (err) {
+    backupLog.textContent = String(err)
+  }
+}
+
+backupForm?.addEventListener('submit', async (event) => {
+  event.preventDefault()
+  const release = setButtonBusy(backupCreateBtn, true, 'Đang tạo')
+  try {
+    const destinationConfig = JSON.parse(backupDestinationConfig.value || '{}')
+    const accountFilter = (backupAccountFilter.value || '').split(',').map((v) => v.trim()).filter(Boolean)
+    const result = await api('/admin/backup/jobs', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        type: 'full',
+        destinationType: backupDestinationType.value,
+        destinationConfig,
+        accountFilter,
+        options: { skipExistingByEtag: true },
+      }),
+    })
+    backupLog.textContent = JSON.stringify(result, null, 2)
+    await loadBackupJobs()
+  } catch (err) {
+    backupLog.textContent = String(err)
+  } finally {
+    release()
+  }
+})
+
+backupRefreshBtn?.addEventListener('click', async () => {
+  const release = setButtonBusy(backupRefreshBtn, true, 'Đang refresh')
+  try {
+    await loadBackupJobs()
+  } finally {
+    release()
+  }
+})
+
+backupJobsBody?.addEventListener('click', async (event) => {
+  const button = event.target.closest('button[data-job-action]')
+  if (!button) return
+  const jobId = button.dataset.jobId
+  const action = button.dataset.jobAction
+  if (!jobId || !action) return
+  try {
+    const result = await api(`/admin/backup/jobs/${encodeURIComponent(jobId)}/${action}`, { method: 'POST' })
+    backupLog.textContent = JSON.stringify(result, null, 2)
+    await loadBackupJobs()
+  } catch (err) {
+    backupLog.textContent = String(err)
+  }
+})
+
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/admin/sw.js', { scope: '/admin/' }).catch(() => {})
 }
 setupInstallApp()
+loadBackupJobs().catch(() => {})
 renderPublicFiles()
 renderAllFiles()
 loadCoreData(false).catch((err) => {
