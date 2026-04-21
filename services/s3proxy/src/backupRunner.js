@@ -1,3 +1,5 @@
+process.env.BACKUP_RUNNER_STANDALONE = 'true'
+
 import pino from 'pino'
 import config from './config.js'
 import { initBackupManager } from './backup/backupManager.js'
