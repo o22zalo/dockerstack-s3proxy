@@ -61,6 +61,13 @@ services:
       CRON_KEEPALIVE_PREFIX: "${S3PROXY_CRON_KEEPALIVE_PREFIX:-_s3proxy_keepalive}"
       CRON_KEEPALIVE_CONTENT_PREFIX: "${S3PROXY_CRON_KEEPALIVE_CONTENT_PREFIX:-s3proxy-keepalive}"
       ADMIN_TEST_PREFIX: "${S3PROXY_ADMIN_TEST_PREFIX:-_s3proxy_probe}"
+      BACKUP_ENABLED: "${S3PROXY_BACKUP_ENABLED:-false}"
+      BACKUP_PROCESSING_MODE: "${S3PROXY_BACKUP_PROCESSING_MODE_APP:-external}"
+      BACKUP_RTDB_URL: "${S3PROXY_BACKUP_RTDB_URL:-}"
+      BACKUP_CONCURRENCY: "${S3PROXY_BACKUP_CONCURRENCY:-3}"
+      BACKUP_CHUNK_STREAM_MS: "${S3PROXY_BACKUP_CHUNK_STREAM_MS:-50}"
+      BACKUP_MAX_OBJECT_SIZE_MB: "${S3PROXY_BACKUP_MAX_OBJECT_SIZE_MB:-512}"
+      BACKUP_STALE_JOB_THRESHOLD_MS: "${S3PROXY_BACKUP_STALE_JOB_THRESHOLD_MS:-30000}"
       # Joplin/S3 clients use SigV4 auth headers and cannot send x-api-key directly.
       # Keep compatibility ON by default; set to "false" for strict header-only auth mode.
       ALLOW_INSECURE_SIGV4_KEY_EXTRACT: "${S3PROXY_ALLOW_INSECURE_SIGV4_KEY_EXTRACT:-true}"
@@ -96,3 +103,32 @@ services:
       timeout: 5s
       retries: 3
       start_period: 15s
+
+  backup-worker:
+    image: "${PROJECT_NAME:-myapp}-s3proxy:local"
+    build:
+      context: ./services/s3proxy
+      dockerfile: Dockerfile
+    command: ["node", "src/backupRunner.js"]
+    env_file:
+      - ./.env
+    environment:
+      NODE_ENV: "${NODE_ENV:-production}"
+      PROXY_API_KEY: "${S3PROXY_API_KEY:-}"
+      FIREBASE_RTDB_URL: "${S3PROXY_FIREBASE_RTDB_URL:-}"
+      FIREBASE_DB_SECRET: "${S3PROXY_FIREBASE_DB_SECRET:-}"
+      SQLITE_PATH: "${S3PROXY_SQLITE_PATH:-./.docker-volumes/s3proxy-data/routes.db}"
+      LOG_LEVEL: "${S3PROXY_LOG_LEVEL:-info}"
+      BACKUP_ENABLED: "${S3PROXY_BACKUP_ENABLED:-false}"
+      BACKUP_PROCESSING_MODE: "${S3PROXY_BACKUP_PROCESSING_MODE_WORKER:-embedded}"
+      BACKUP_RTDB_URL: "${S3PROXY_BACKUP_RTDB_URL:-}"
+      BACKUP_CONCURRENCY: "${S3PROXY_BACKUP_CONCURRENCY:-3}"
+      BACKUP_CHUNK_STREAM_MS: "${S3PROXY_BACKUP_CHUNK_STREAM_MS:-50}"
+      BACKUP_MAX_OBJECT_SIZE_MB: "${S3PROXY_BACKUP_MAX_OBJECT_SIZE_MB:-512}"
+      BACKUP_STALE_JOB_THRESHOLD_MS: "${S3PROXY_BACKUP_STALE_JOB_THRESHOLD_MS:-30000}"
+    volumes:
+      - ${DOCKER_VOLUMES_ROOT:-./.docker-volumes}/s3proxy-data:/app/.docker-volumes/s3proxy-data
+      - ${DOCKER_VOLUMES_ROOT:-./.docker-volumes}/s3proxy-backup:/backup-data
+    profiles: ["backup-worker"]
+    networks: [app_net]
+    restart: unless-stopped

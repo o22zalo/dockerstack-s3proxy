@@ -27,6 +27,21 @@ function optionalEnv(name, defaultValue) {
   return val.trim();
 }
 
+function optionalEnvAny(names, defaultValue) {
+  for (const name of names) {
+    const val = process.env[name]
+    if (val && val.trim() !== '') return val.trim()
+  }
+  return defaultValue
+}
+
+function optionalEnum(name, allowedValues, defaultValue) {
+  const val = optionalEnv(name, defaultValue)
+  if (allowedValues.includes(val)) return val
+  process.stderr.write(`[config] WARNING: ${name}="${val}" is not valid, using default ${defaultValue}\n`)
+  return defaultValue
+}
+
 function optionalFloat(name, defaultValue) {
   const val = process.env[name];
   if (!val || val.trim() === "") return defaultValue;
@@ -36,6 +51,28 @@ function optionalFloat(name, defaultValue) {
     return defaultValue;
   }
   return numeric;
+}
+
+function optionalIntAny(names, defaultValue) {
+  for (const name of names) {
+    const val = process.env[name]
+    if (!val || val.trim() === '') continue
+    const numeric = Number.parseInt(val.trim(), 10)
+    if (Number.isNaN(numeric)) continue
+    return numeric
+  }
+  return defaultValue
+}
+
+function optionalBoolAny(names, defaultValue) {
+  for (const name of names) {
+    const val = process.env[name]
+    if (!val || val.trim() === '') continue
+    const normalized = val.trim().toLowerCase()
+    if (["1", "true", "yes", "on"].includes(normalized)) return true
+    if (["0", "false", "no", "off"].includes(normalized)) return false
+  }
+  return defaultValue
 }
 
 function optionalInt(name, defaultValue) {
@@ -138,6 +175,13 @@ const config = Object.freeze({
   CRON_KEEPALIVE_PREFIX: optionalEnv("CRON_KEEPALIVE_PREFIX", "_s3proxy_keepalive"),
   CRON_KEEPALIVE_CONTENT_PREFIX: optionalEnv("CRON_KEEPALIVE_CONTENT_PREFIX", "s3proxy-keepalive"),
   ADMIN_TEST_PREFIX: optionalEnv("ADMIN_TEST_PREFIX", "_s3proxy_probe"),
+  BACKUP_ENABLED: optionalBool("BACKUP_ENABLED", false),
+  BACKUP_PROCESSING_MODE: optionalEnum("BACKUP_PROCESSING_MODE", ["disabled", "external", "embedded"], "external"),
+  BACKUP_RTDB_URL: optionalEnv("BACKUP_RTDB_URL", ""),
+  BACKUP_CONCURRENCY: optionalInt("BACKUP_CONCURRENCY", 3),
+  BACKUP_CHUNK_STREAM_MS: optionalInt("BACKUP_CHUNK_STREAM_MS", 50),
+  BACKUP_MAX_OBJECT_SIZE_MB: optionalInt("BACKUP_MAX_OBJECT_SIZE_MB", 512),
+  BACKUP_STALE_JOB_THRESHOLD_MS: optionalInt("BACKUP_STALE_JOB_THRESHOLD_MS", 30000),
 });
 
 export default config;

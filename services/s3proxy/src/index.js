@@ -38,6 +38,8 @@ import accountRoutes from './routes/accounts.js'
 import adminRoutes from './routes/admin.js'
 import publicBucketProxyRoutes from './routes/publicBucketProxy.js'
 import s3Routes from './routes/s3.js'
+import backupRoutes from './routes/backup.js'
+import { initBackupManager, stopBackupManager } from './backup/backupManager.js'
 
 const log = pino({
   level: config.LOG_LEVEL,
@@ -188,6 +190,7 @@ async function shutdown(signal) {
   stopQuotaPoller()
   stopReconciler()
   stopCronScheduler()
+  stopBackupManager()
 
   if (routesListener) {
     try { routesListener.close() } catch {
@@ -302,6 +305,7 @@ async function bootstrap() {
   await fastify.register(accountRoutes)
   await fastify.register(adminRoutes)
   await fastify.register(publicBucketProxyRoutes)
+  await fastify.register(backupRoutes)
   await fastify.register(s3Routes, { prefix: '/' })
 
   fastify.addHook('onSend', async (_request, reply) => {
@@ -312,6 +316,15 @@ async function bootstrap() {
 
   await fastify.listen({ port: config.PORT, host: '0.0.0.0' })
   log.info({ port: config.PORT }, 'fastify listening')
+
+  if (config.BACKUP_ENABLED && config.BACKUP_PROCESSING_MODE === 'embedded' && !process.env.BACKUP_RUNNER_STANDALONE) {
+    const backupManagerResult = initBackupManager(log)
+    if (backupManagerResult.started) {
+      log.info({ concurrency: config.BACKUP_CONCURRENCY }, 'backup manager started (embedded mode)')
+    }
+  } else if (config.BACKUP_ENABLED) {
+    log.info({ backupProcessingMode: config.BACKUP_PROCESSING_MODE }, 'backup manager not started in app process')
+  }
 
   if (rtdbConnected) {
     startRoutesListener()

@@ -154,6 +154,76 @@ db.exec(`
     created_at   INTEGER NOT NULL,
     updated_at   INTEGER NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS backup_jobs (
+    job_id          TEXT PRIMARY KEY,
+    type            TEXT NOT NULL DEFAULT 'full',
+    status          TEXT NOT NULL DEFAULT 'pending',
+    created_at      INTEGER NOT NULL,
+    started_at      INTEGER,
+    completed_at    INTEGER,
+    destination_type TEXT NOT NULL,
+    destination_config_json TEXT NOT NULL DEFAULT '{}',
+    account_filter_json TEXT NOT NULL DEFAULT '[]',
+    total_objects   INTEGER NOT NULL DEFAULT 0,
+    done_objects    INTEGER NOT NULL DEFAULT 0,
+    failed_objects  INTEGER NOT NULL DEFAULT 0,
+    total_bytes     INTEGER NOT NULL DEFAULT 0,
+    done_bytes      INTEGER NOT NULL DEFAULT 0,
+    last_error      TEXT,
+    resume_token    TEXT,
+    running_instance_id TEXT,
+    running_heartbeat_at INTEGER,
+    options_json    TEXT NOT NULL DEFAULT '{}'
+  );
+
+  CREATE TABLE IF NOT EXISTS backup_ledger (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id          TEXT NOT NULL REFERENCES backup_jobs(job_id),
+    account_id      TEXT NOT NULL,
+    backend_bucket  TEXT NOT NULL,
+    backend_key     TEXT NOT NULL,
+    encoded_key     TEXT NOT NULL,
+    destination_type TEXT NOT NULL DEFAULT 'local',
+    status          TEXT NOT NULL DEFAULT 'pending',
+    src_etag        TEXT,
+    src_size_bytes  INTEGER,
+    dst_key         TEXT,
+    dst_location    TEXT,
+    attempt_count   INTEGER NOT NULL DEFAULT 0,
+    last_attempt_at INTEGER,
+    error           TEXT,
+    completed_at    INTEGER
+  );
+
+  CREATE TABLE IF NOT EXISTS backend_migrations (
+    migration_id    TEXT PRIMARY KEY,
+    type            TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'pending',
+    source_account_id TEXT NOT NULL,
+    target_account_id TEXT NOT NULL,
+    created_at      INTEGER NOT NULL,
+    started_at      INTEGER,
+    completed_at    INTEGER,
+    total_objects   INTEGER NOT NULL DEFAULT 0,
+    done_objects    INTEGER NOT NULL DEFAULT 0,
+    failed_objects  INTEGER NOT NULL DEFAULT 0,
+    rollback_json   TEXT,
+    options_json    TEXT NOT NULL DEFAULT '{}'
+  );
+
+  CREATE TABLE IF NOT EXISTS backend_migration_ledger (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    migration_id    TEXT NOT NULL REFERENCES backend_migrations(migration_id),
+    encoded_key     TEXT NOT NULL,
+    object_key      TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'pending',
+    src_etag        TEXT,
+    dst_etag        TEXT,
+    attempt_count   INTEGER NOT NULL DEFAULT 0,
+    error           TEXT,
+    completed_at    INTEGER
+  );
 `)
 
 ensureColumn('routes', 'backend_key', "backend_key TEXT NOT NULL DEFAULT ''")
@@ -181,6 +251,9 @@ ensureColumn('accounts', 'public_bucket', 'public_bucket INTEGER NOT NULL DEFAUL
 ensureColumn('buckets', 'updated_at', 'updated_at INTEGER NOT NULL DEFAULT 0')
 ensureColumn('buckets', 'deleted_at', 'deleted_at INTEGER')
 ensureColumn('buckets', 'versioning_status', "versioning_status TEXT NOT NULL DEFAULT ''")
+ensureColumn('backup_ledger', 'destination_type', "destination_type TEXT NOT NULL DEFAULT 'local'")
+ensureColumn('backup_jobs', 'running_instance_id', 'running_instance_id TEXT')
+ensureColumn('backup_jobs', 'running_heartbeat_at', 'running_heartbeat_at INTEGER')
 
 db.exec(`
   UPDATE routes
@@ -245,6 +318,14 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_accounts_public_active ON accounts(public_bucket, active, used_bytes);
   CREATE INDEX IF NOT EXISTS idx_buckets_deleted ON buckets(deleted_at, bucket);
   CREATE INDEX IF NOT EXISTS idx_cron_jobs_enabled ON cron_jobs(enabled, updated_at);
+  DROP INDEX IF EXISTS idx_backup_ledger_job_backend;
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_backup_ledger_job_account_backend_dest ON backup_ledger(job_id, account_id, backend_key, destination_type);
+  CREATE INDEX IF NOT EXISTS idx_backup_ledger_job_status ON backup_ledger(job_id, status);
+  CREATE INDEX IF NOT EXISTS idx_backup_ledger_job_status_id ON backup_ledger(job_id, status, id);
+  CREATE INDEX IF NOT EXISTS idx_backup_jobs_status_created ON backup_jobs(status, created_at);
+  CREATE INDEX IF NOT EXISTS idx_backup_jobs_running_heartbeat ON backup_jobs(status, running_heartbeat_at);
+  CREATE INDEX IF NOT EXISTS idx_backend_migrations_created ON backend_migrations(created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_mig_ledger_status ON backend_migration_ledger(migration_id, status);
 `)
 
 function isUsageCounted(route) {
@@ -526,6 +607,23 @@ const stmts = {
     SELECT account_id, state, COUNT(*) AS object_count
     FROM routes
     GROUP BY account_id, state
+  `),
+  backupJobCountsByStatus: db.prepare(`
+    SELECT status, COUNT(*) AS total
+    FROM backup_jobs
+    GROUP BY status
+  `),
+  backupRunningJobsCount: db.prepare(`
+    SELECT COUNT(*) AS total
+    FROM backup_jobs
+    WHERE status = 'running'
+  `),
+  backupLastCompletedJob: db.prepare(`
+    SELECT job_id, completed_at, done_objects, failed_objects, total_objects
+    FROM backup_jobs
+    WHERE status = 'completed' AND completed_at IS NOT NULL
+    ORDER BY completed_at DESC
+    LIMIT 1
   `),
 }
 
@@ -1015,4 +1113,16 @@ export function getLogicalBytesByBucketAccount() {
 
 export function getRouteStateCountsByAccount() {
   return stmts.stateCountsByAccount.all()
+}
+
+export function getBackupJobStatusCounts() {
+  return stmts.backupJobCountsByStatus.all()
+}
+
+export function getBackupRunningJobsCount() {
+  return stmts.backupRunningJobsCount.get()?.total ?? 0
+}
+
+export function getBackupLastCompletedJob() {
+  return stmts.backupLastCompletedJob.get() ?? null
 }

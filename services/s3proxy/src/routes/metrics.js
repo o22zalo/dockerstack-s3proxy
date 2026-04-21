@@ -6,9 +6,11 @@
 import { Registry, Counter, Gauge, Histogram, collectDefaultMetrics } from 'prom-client'
 import {
   getActiveObjectStatsByBucket,
+  getBackupJobStatusCounts,
   getLogicalBytesByBucketAccount,
   getRouteStateCountsByAccount,
 } from '../db.js'
+import { listJobs } from '../backup/backupJournal.js'
 
 export const register = new Registry()
 register.setDefaultLabels({ service: 's3proxy' })
@@ -138,6 +140,37 @@ export const metrics = {
     labelNames: ['bucket', 'account_id'],
     registers: [register],
   }),
+  backupJobsByStatus: new Gauge({
+    name: 's3proxy_backup_jobs_by_status',
+    help: 'Backup job count grouped by status',
+    labelNames: ['status'],
+    registers: [register],
+  }),
+  backupObjectsTotal: new Counter({
+    name: 's3proxy_backup_objects_total',
+    help: 'Objects processed by backup system',
+    labelNames: ['status', 'destination_type'],
+    registers: [register],
+  }),
+  backupBytesTotal: new Counter({
+    name: 's3proxy_backup_bytes_total',
+    help: 'Bytes transferred by backup system',
+    labelNames: ['destination_type'],
+    registers: [register],
+  }),
+  backupJobDurationSeconds: new Histogram({
+    name: 's3proxy_backup_job_duration_seconds',
+    help: 'Backup job duration in seconds',
+    labelNames: ['type', 'status'],
+    buckets: [60, 300, 600, 1800, 3600, 7200],
+    registers: [register],
+  }),
+  migrationObjectsTotal: new Counter({
+    name: 's3proxy_migration_objects_total',
+    help: 'Objects migrated between backends',
+    labelNames: ['status'],
+    registers: [register],
+  }),
 }
 
 export function refreshMetadataMetrics() {
@@ -145,6 +178,7 @@ export function refreshMetadataMetrics() {
   metrics.logicalObjectBytes.reset()
   metrics.orphanBackendObjects.reset()
   metrics.missingBackendObjects.reset()
+  metrics.backupJobsByStatus.reset()
 
   for (const row of getActiveObjectStatsByBucket()) {
     metrics.activeLogicalObjects.set({ bucket: row.bucket }, row.object_count)
@@ -162,6 +196,20 @@ export function refreshMetadataMetrics() {
       metrics.missingBackendObjects.set({ account_id: row.account_id }, row.object_count)
     }
   }
+
+  for (const row of getBackupJobStatusCounts()) {
+    metrics.backupJobsByStatus.set({ status: row.status }, row.total)
+  }
+
+  try {
+    const completedJobs = listJobs({ limit: 100, status: 'completed' })
+    for (const job of completedJobs) {
+      if (job.started_at && job.completed_at) {
+        const duration = (job.completed_at - job.started_at) / 1000
+        metrics.backupJobDurationSeconds.observe({ type: job.type || 'full', status: 'completed' }, duration)
+      }
+    }
+  } catch {}
 }
 
 export default async function metricsRoutes(fastify, _opts) {
