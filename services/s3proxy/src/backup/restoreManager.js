@@ -55,6 +55,21 @@ export async function startRestoreJob({
   let restored = 0
   let failed = 0
   const errors = []
+  const clientCache = new Map()
+  const getOrCreateClient = (account) => {
+    if (clientCache.has(account.account_id)) return clientCache.get(account.account_id)
+    const client = new S3Client({
+      endpoint: account.endpoint,
+      region: account.region || 'us-east-1',
+      credentials: {
+        accessKeyId: account.access_key_id,
+        secretAccessKey: account.secret_key,
+      },
+      forcePathStyle: true,
+    })
+    clientCache.set(account.account_id, client)
+    return client
+  }
 
   for (const entry of ledgerEntries) {
     const targetAccountId = targetAccountMapping[entry.account_id] ?? entry.account_id
@@ -76,30 +91,16 @@ export async function startRestoreJob({
       }
 
       const readStream = await sourceDest.read(entry.dst_key)
-      const contentType = 'application/octet-stream'
+      const contentType = entry.content_type || 'application/octet-stream'
       const sizeBytes = Number(entry.src_size_bytes || 0)
-
-      const client = new S3Client({
-        endpoint: targetAccount.endpoint,
-        region: targetAccount.region || 'us-east-1',
-        credentials: {
-          accessKeyId: targetAccount.access_key_id,
-          secretAccessKey: targetAccount.secret_key,
-        },
-        forcePathStyle: true,
-      })
-
-      const chunks = []
-      for await (const chunk of readStream) {
-        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
-      }
-      const body = Buffer.concat(chunks)
+      const client = getOrCreateClient(targetAccount)
 
       await client.send(new PutObjectCommand({
         Bucket: targetAccount.bucket,
         Key: entry.backend_key,
-        Body: body,
+        Body: readStream,
         ContentType: contentType,
+        ContentLength: sizeBytes > 0 ? sizeBytes : undefined,
       }))
 
       commitUploadedObjectMetadata({

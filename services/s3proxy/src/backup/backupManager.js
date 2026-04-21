@@ -1,5 +1,7 @@
 import config from '../config.js'
 import { Readable } from 'stream'
+import os from 'os'
+import path from 'path'
 import { getAllAccounts, getRouteByBackendKey } from '../db.js'
 import { scanAccountInventory } from '../inventoryScanner.js'
 import { encodeKey } from '../metadata.js'
@@ -19,6 +21,7 @@ import {
   updateJobProgress,
   updateJobStatus,
   upsertLedgerEntry,
+  setJobOutputPath,
 } from './backupJournal.js'
 import { createDestination } from './destinations/index.js'
 import { copyObjectToDestination } from './backupWorker.js'
@@ -72,12 +75,22 @@ function buildSemaphore(max) {
 
 export async function startBackupJob(payload) {
   const destinationConfig = payload?.destinationConfig || {}
+  const destinationType = payload?.destinationType
+
+  if (destinationType === 'zip' && !destinationConfig.outputPath && !destinationConfig.outputStream) {
+    const tmpDir = process.env.BACKUP_ZIP_TMP_DIR || os.tmpdir()
+    destinationConfig._autoAssignOutputPath = true
+    destinationConfig._zipTmpDir = tmpDir
+    payload.destinationConfig = destinationConfig
+  }
+
   if (Array.isArray(destinationConfig.destinations) && destinationConfig.destinations.length > 0) {
     destinationConfig.destinations.forEach((item) => {
-      createDestination(item.type || payload.destinationType, item.config || {})
+      const itemType = item.type || destinationType
+      if (itemType !== 'zip') createDestination(itemType, item.config || {})
     })
-  } else {
-    createDestination(payload.destinationType, destinationConfig)
+  } else if (destinationType !== 'zip') {
+    createDestination(destinationType, destinationConfig)
   }
   return createBackupJob(payload)
 }
@@ -171,12 +184,24 @@ export async function processBackupJob(job, logger = console) {
 
   const destinationConfig = job.destination_config || {}
   const destinationType = job.destination_type
-  const destinations = Array.isArray(destinationConfig.destinations) && destinationConfig.destinations.length > 0
-    ? destinationConfig.destinations.map((item) => ({
+  const resolvedDestConfig = { ...destinationConfig }
+  if (destinationType === 'zip' && resolvedDestConfig._autoAssignOutputPath) {
+    resolvedDestConfig.outputPath = path.join(
+      resolvedDestConfig._zipTmpDir || '/tmp',
+      `backup-${job.job_id}.zip`,
+    )
+    delete resolvedDestConfig._autoAssignOutputPath
+    delete resolvedDestConfig._zipTmpDir
+  }
+  if (destinationType === 'zip' && resolvedDestConfig.outputPath) {
+    setJobOutputPath(job.job_id, resolvedDestConfig.outputPath)
+  }
+  const destinations = Array.isArray(resolvedDestConfig.destinations) && resolvedDestConfig.destinations.length > 0
+    ? resolvedDestConfig.destinations.map((item) => ({
       type: item.type || destinationType,
       adapter: createDestination(item.type || destinationType, item.config || {}),
     }))
-    : [{ type: destinationType, adapter: createDestination(destinationType, destinationConfig) }]
+    : [{ type: destinationType, adapter: createDestination(destinationType, resolvedDestConfig) }]
 
   const progress = {
     totalObjects: 0,
@@ -412,6 +437,11 @@ export async function processBackupJob(job, logger = console) {
     }
 
     await Promise.all(inFlight)
+    for (const destination of destinations) {
+      if (destination.type === 'zip' && typeof destination.adapter.finalize === 'function') {
+        await destination.adapter.finalize()
+      }
+    }
 
     if (job.options?.includeRtdb) {
       const snapshot = {

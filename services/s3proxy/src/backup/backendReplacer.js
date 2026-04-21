@@ -5,6 +5,7 @@ import {
   getAllAccounts,
   getTrackedRoutesByAccount,
   commitUploadedObjectMetadata,
+  db,
 } from '../db.js'
 import {
   S3Client,
@@ -15,6 +16,29 @@ import {
   PutObjectCommand,
   DeleteObjectCommand,
 } from '@aws-sdk/client-s3'
+
+const stmts = {
+  insertMigration: db.prepare(`
+    INSERT INTO backend_migrations (
+      migration_id, type, status, source_account_id, target_account_id,
+      created_at, started_at, total_objects, options_json
+    ) VALUES (
+      @migration_id, @type, @status, @source_account_id, @target_account_id,
+      @created_at, @started_at, @total_objects, @options_json
+    )
+  `),
+  updateMigration: db.prepare(`
+    UPDATE backend_migrations
+    SET status=@status,
+        completed_at=@completed_at,
+        done_objects=@done_objects,
+        failed_objects=@failed_objects,
+        rollback_json=@rollback_json
+    WHERE migration_id=@migration_id
+  `),
+  getMigration: db.prepare('SELECT * FROM backend_migrations WHERE migration_id = ?'),
+  listMigrations: db.prepare('SELECT * FROM backend_migrations ORDER BY created_at DESC LIMIT @limit OFFSET @offset'),
+}
 
 function makeS3Client(account) {
   return new S3Client({
@@ -55,8 +79,29 @@ export async function replaceBackendConfig(sourceAccountId, newAccountConfig, { 
   if (!existing) throw new Error(`account not found: ${sourceAccountId}`)
 
   const rollbackSnapshot = { ...existing }
+  const createdAt = Date.now()
+
+  stmts.insertMigration.run({
+    migration_id: migrationId,
+    type: 'replace_config',
+    status: dryRun ? 'dry_run' : 'running',
+    source_account_id: sourceAccountId,
+    target_account_id: sourceAccountId,
+    created_at: createdAt,
+    started_at: createdAt,
+    total_objects: 0,
+    options_json: JSON.stringify({ dryRun }),
+  })
 
   if (dryRun) {
+    stmts.updateMigration.run({
+      migration_id: migrationId,
+      status: 'dry_run',
+      completed_at: Date.now(),
+      done_objects: 0,
+      failed_objects: 0,
+      rollback_json: null,
+    })
     return {
       migrationId,
       migrationType: 'replace_config',
@@ -72,6 +117,15 @@ export async function replaceBackendConfig(sourceAccountId, newAccountConfig, { 
     ...existing,
     ...newAccountConfig,
     account_id: sourceAccountId,
+  })
+
+  stmts.updateMigration.run({
+    migration_id: migrationId,
+    status: 'completed',
+    completed_at: Date.now(),
+    done_objects: 0,
+    failed_objects: 0,
+    rollback_json: JSON.stringify(rollbackSnapshot),
   })
 
   return {
@@ -96,6 +150,17 @@ export async function migrateBackendObjects(sourceAccountId, targetAccountId, op
   if (!targetAccount) throw new Error(`target account not found: ${targetAccountId}`)
 
   const routes = getTrackedRoutesByAccount(sourceAccountId)
+  stmts.insertMigration.run({
+    migration_id: migrationId,
+    type: 'copy_objects',
+    status: 'running',
+    source_account_id: sourceAccountId,
+    target_account_id: targetAccountId,
+    created_at: Date.now(),
+    started_at: Date.now(),
+    total_objects: routes.length,
+    options_json: JSON.stringify({ dryRun, deleteSource, skipExistingByEtag, concurrency }),
+  })
   logger.info?.({ migrationId, sourceAccountId, targetAccountId, routeCount: routes.length, dryRun }, 'migrate started')
 
   const sourceClient = makeS3Client(sourceAccount)
@@ -131,22 +196,24 @@ export async function migrateBackendObjects(sourceAccountId, targetAccountId, op
         }
       }
 
+      const headRes = await sourceClient.send(new HeadObjectCommand({
+        Bucket: sourceAccount.bucket,
+        Key: route.backend_key,
+      }))
+      const objectSize = Number(headRes.ContentLength || 0)
+      const contentType = headRes.ContentType || 'application/octet-stream'
+
       const getRes = await sourceClient.send(new GetObjectCommand({
         Bucket: sourceAccount.bucket,
         Key: route.backend_key,
       }))
 
-      const chunks = []
-      for await (const chunk of getRes.Body) {
-        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
-      }
-      const body = Buffer.concat(chunks)
-
       await targetClient.send(new PutObjectCommand({
         Bucket: targetAccount.bucket,
         Key: route.backend_key,
-        Body: body,
-        ContentType: getRes.ContentType || 'application/octet-stream',
+        Body: getRes.Body,
+        ContentType: contentType,
+        ContentLength: objectSize > 0 ? objectSize : undefined,
       }))
 
       commitUploadedObjectMetadata({
@@ -176,18 +243,39 @@ export async function migrateBackendObjects(sourceAccountId, targetAccountId, op
     }
   }
 
-  const tasks = new Set()
-  const effectiveConcurrency = Math.max(1, Number(concurrency) || 1)
-  for (const route of routes) {
-    while (inflight >= effectiveConcurrency) await wait()
-    inflight += 1
-    const t = migrateOne(route).finally(() => {
-      inflight -= 1
-      tasks.delete(t)
+  try {
+    const tasks = new Set()
+    const effectiveConcurrency = Math.max(1, Number(concurrency) || 1)
+    for (const route of routes) {
+      while (inflight >= effectiveConcurrency) await wait()
+      inflight += 1
+      const t = migrateOne(route).finally(() => {
+        inflight -= 1
+        tasks.delete(t)
+      })
+      tasks.add(t)
+    }
+    await Promise.all(tasks)
+  } catch (err) {
+    stmts.updateMigration.run({
+      migration_id: migrationId,
+      status: 'failed',
+      completed_at: Date.now(),
+      done_objects: done,
+      failed_objects: failed + 1,
+      rollback_json: null,
     })
-    tasks.add(t)
+    throw err
   }
-  await Promise.all(tasks)
+
+  stmts.updateMigration.run({
+    migration_id: migrationId,
+    status: failed > 0 ? 'completed_with_errors' : 'completed',
+    completed_at: Date.now(),
+    done_objects: done,
+    failed_objects: failed,
+    rollback_json: null,
+  })
 
   return {
     migrationId,
@@ -204,10 +292,37 @@ export async function migrateBackendObjects(sourceAccountId, targetAccountId, op
 }
 
 export async function rollbackMigration(migrationId) {
+  const record = stmts.getMigration.get(migrationId)
+  if (!record) return { migrationId, status: 'error', error: 'migration_not_found' }
+
+  if (record.type === 'replace_config' && record.rollback_json) {
+    let rollbackSnapshot
+    try { rollbackSnapshot = JSON.parse(record.rollback_json) } catch { rollbackSnapshot = null }
+
+    if (rollbackSnapshot) {
+      upsertAccount(rollbackSnapshot)
+      stmts.updateMigration.run({
+        migration_id: migrationId,
+        status: 'rolled_back',
+        completed_at: Date.now(),
+        done_objects: record.done_objects,
+        failed_objects: record.failed_objects,
+        rollback_json: record.rollback_json,
+      })
+      return {
+        migrationId,
+        status: 'rolled_back',
+        type: 'replace_config',
+        message: `Config của account ${record.source_account_id} đã được khôi phục về snapshot cũ.`,
+      }
+    }
+  }
+
   return {
     migrationId,
     status: 'manual_required',
-    message: 'Automatic rollback requires migration snapshot. Use replaceBackendConfig() với rollbackSnapshot để khôi phục config, sau đó chạy migrate theo chiều ngược lại nếu cần.',
+    type: record.type,
+    message: 'Automatic rollback chỉ hỗ trợ replace_config. Với copy_objects, chạy migrate theo chiều ngược lại nếu cần.',
   }
 }
 
@@ -243,4 +358,8 @@ export async function diagnoseBackend(accountId) {
     suggestedActions,
     alternativeAccounts,
   }
+}
+
+export function listMigrationsFromDb({ limit = 20, offset = 0 } = {}) {
+  return stmts.listMigrations.all({ limit, offset })
 }

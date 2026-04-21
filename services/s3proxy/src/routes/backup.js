@@ -1,3 +1,5 @@
+import { createReadStream, existsSync } from 'fs'
+import { pipeline } from 'stream/promises'
 import {
   cancelBackupJob,
   getJobLiveStatus,
@@ -9,7 +11,14 @@ import {
   startBackupJob,
 } from '../backup/backupManager.js'
 import config from '../config.js'
-import { checkBackendHealth, diagnoseBackend, migrateBackendObjects, replaceBackendConfig, rollbackMigration } from '../backup/backendReplacer.js'
+import {
+  checkBackendHealth,
+  diagnoseBackend,
+  listMigrationsFromDb,
+  migrateBackendObjects,
+  replaceBackendConfig,
+  rollbackMigration,
+} from '../backup/backendReplacer.js'
 import { startRestoreJob, verifyRestoreIntegrity } from '../backup/restoreManager.js'
 import { getAccountById } from '../db.js'
 
@@ -199,12 +208,21 @@ export default async function backupRoutes(fastify) {
       return reply.code(400).send({ ok: false, error: 'JOB_NOT_ZIP_TYPE' })
     }
     if (job.status !== 'completed') {
-      return reply.code(409).send({ ok: false, error: 'JOB_NOT_COMPLETED' })
+      return reply.code(409).send({ ok: false, error: 'JOB_NOT_COMPLETED', status: job.status })
+    }
+    const outputPath = job.options?.outputPath
+    if (!outputPath) {
+      return reply.code(404).send({ ok: false, error: 'ZIP_OUTPUT_PATH_NOT_SET' })
+    }
+    if (!existsSync(outputPath)) {
+      return reply.code(404).send({ ok: false, error: 'ZIP_FILE_NOT_FOUND', path: outputPath })
     }
     reply.raw.setHeader('Content-Type', 'application/zip')
     reply.raw.setHeader('Content-Disposition', `attachment; filename="backup-${request.params.jobId}.zip"`)
     reply.raw.setHeader('Cache-Control', 'no-store')
-    return reply.raw
+    const fileStream = createReadStream(outputPath)
+    await pipeline(fileStream, reply.raw)
+    return reply
   })
 
   fastify.get('/admin/backup/jobs/:jobId/events', async (request, reply) => {
@@ -251,8 +269,11 @@ export default async function backupRoutes(fastify) {
     }
   })
 
-  fastify.get('/admin/backup/backends/migrations', async () => {
-    return { ok: true, migrations: [] }
+  fastify.get('/admin/backup/backends/migrations', async (request) => {
+    const limit = Number(request.query.limit || 20)
+    const offset = Number(request.query.offset || 0)
+    const migrations = listMigrationsFromDb({ limit, offset })
+    return { ok: true, migrations }
   })
 
   fastify.post('/admin/backup/backends/migrations/:migrationId/rollback', async (request) => {

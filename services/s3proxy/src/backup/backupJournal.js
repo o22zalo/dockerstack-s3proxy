@@ -112,6 +112,11 @@ const stmts = {
     ORDER BY id DESC
     LIMIT @limit OFFSET @offset
   `),
+  updateJobOutputPath: db.prepare(`
+    UPDATE backup_jobs
+    SET options_json = json_set(COALESCE(options_json, '{}'), '$.outputPath', @output_path)
+    WHERE job_id = @job_id
+  `),
 }
 
 function parseJson(value, fallback) {
@@ -279,6 +284,10 @@ export function listJobs({ limit = 20, offset = 0, status } = {}) {
 
 export function listLedgerEntries(jobId, { limit = 200, offset = 0 } = {}) {
   return stmts.listLedgerByJob.all({ job_id: jobId, limit, offset })
+}
+
+export function setJobOutputPath(jobId, outputPath) {
+  stmts.updateJobOutputPath.run({ job_id: jobId, output_path: outputPath })
 }
 
 export function deleteJobById(jobId) {
