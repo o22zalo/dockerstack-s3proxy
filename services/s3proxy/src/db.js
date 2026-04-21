@@ -323,6 +323,7 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_backup_ledger_job_status ON backup_ledger(job_id, status);
   CREATE INDEX IF NOT EXISTS idx_backup_ledger_job_status_id ON backup_ledger(job_id, status, id);
   CREATE INDEX IF NOT EXISTS idx_backup_jobs_status_created ON backup_jobs(status, created_at);
+  CREATE INDEX IF NOT EXISTS idx_backup_jobs_running_heartbeat ON backup_jobs(status, running_heartbeat_at);
   CREATE INDEX IF NOT EXISTS idx_backend_migrations_created ON backend_migrations(created_at DESC);
   CREATE INDEX IF NOT EXISTS idx_mig_ledger_status ON backend_migration_ledger(migration_id, status);
 `)

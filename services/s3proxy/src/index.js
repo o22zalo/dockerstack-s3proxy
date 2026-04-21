@@ -317,11 +317,13 @@ async function bootstrap() {
   await fastify.listen({ port: config.PORT, host: '0.0.0.0' })
   log.info({ port: config.PORT }, 'fastify listening')
 
-  if (config.BACKUP_ENABLED && !process.env.BACKUP_RUNNER_STANDALONE) {
+  if (config.BACKUP_ENABLED && config.BACKUP_PROCESSING_MODE === 'embedded' && !process.env.BACKUP_RUNNER_STANDALONE) {
     const backupManagerResult = initBackupManager(log)
     if (backupManagerResult.started) {
       log.info({ concurrency: config.BACKUP_CONCURRENCY }, 'backup manager started (embedded mode)')
     }
+  } else if (config.BACKUP_ENABLED) {
+    log.info({ backupProcessingMode: config.BACKUP_PROCESSING_MODE }, 'backup manager not started in app process')
   }
 
   if (rtdbConnected) {

@@ -30,21 +30,14 @@ const activeJobs = new Map()
 let managerInterval = null
 const STALE_JOB_THRESHOLD_MS = config.BACKUP_STALE_JOB_THRESHOLD_MS || 30_000
 
-export function initBackupManager(logger = console, intervalMs = 2000) {
+export function initBackupManager(logger = console, intervalMs = 2000, { keepAlive = false } = {}) {
   if (managerInterval) return { started: false }
-  const staleRunning = getRunningJob()
-  if (staleRunning) {
-    updateJobStatus(staleRunning.job_id, 'pending', {
-      completedAt: null,
-      lastError: 'auto_resumed_after_restart',
-    }).catch(() => {})
-  }
   managerInterval = setInterval(() => {
     runPendingBackupJobs(logger).catch((err) => {
       logger?.error?.({ err: err.message }, 'backup manager tick failed')
     })
   }, intervalMs)
-  managerInterval.unref?.()
+  if (!keepAlive) managerInterval.unref?.()
   return { started: true }
 }
 
@@ -583,7 +576,7 @@ export async function runPendingBackupJobs(logger = console) {
     })
   }
 
-  const pendingJob = claimNextPendingJob()
+  const pendingJob = claimNextPendingJob({ instanceId: config.INSTANCE_ID, heartbeatAt: Date.now() })
   if (!pendingJob) return null
 
   processBackupJob(pendingJob, logger).catch((err) => {

@@ -80,6 +80,15 @@ export default async function backupRoutes(fastify) {
   })
 
   fastify.post('/admin/backup/jobs', async (request, reply) => {
+    if (config.BACKUP_PROCESSING_MODE === 'disabled') {
+      reply.code(503)
+      return {
+        ok: false,
+        error: 'BACKUP_PROCESSING_DISABLED',
+        message: 'Backup job processing is disabled by BACKUP_PROCESSING_MODE=disabled.',
+      }
+    }
+
     const body = request.body || {}
     const destinationType = String(body.destinationType || '').trim()
     if (!destinationType) {
@@ -97,7 +106,14 @@ export default async function backupRoutes(fastify) {
       })
 
       reply.code(202)
-      return { ok: true, job: sanitizeJob(job) }
+      return {
+        ok: true,
+        job: sanitizeJob(job),
+        processingMode: config.BACKUP_PROCESSING_MODE,
+        message: config.BACKUP_PROCESSING_MODE === 'external'
+          ? 'Job queued. Processing requires backup-worker to be running.'
+          : 'Job queued and eligible for embedded processing.',
+      }
     } catch (err) {
       reply.code(400)
       return { ok: false, error: err.message }
@@ -146,6 +162,7 @@ export default async function backupRoutes(fastify) {
       backupEnabled: config.BACKUP_ENABLED,
       backupRtdbConfigured: Boolean(config.BACKUP_RTDB_URL),
       backupConcurrency: config.BACKUP_CONCURRENCY,
+      backupProcessingMode: config.BACKUP_PROCESSING_MODE,
       backupChunkStreamMs: config.BACKUP_CHUNK_STREAM_MS,
       backupMaxObjectSizeMb: config.BACKUP_MAX_OBJECT_SIZE_MB,
       destinationTypes: ['local', 'mock', 's3', 'zip', 'gdrive', 'onedrive'],
