@@ -610,6 +610,18 @@ const stmts = {
     FROM backup_jobs
     GROUP BY status
   `),
+  backupRunningJobsCount: db.prepare(`
+    SELECT COUNT(*) AS total
+    FROM backup_jobs
+    WHERE status = 'running'
+  `),
+  backupLastCompletedJob: db.prepare(`
+    SELECT job_id, completed_at, done_objects, failed_objects, total_objects
+    FROM backup_jobs
+    WHERE status = 'completed' AND completed_at IS NOT NULL
+    ORDER BY completed_at DESC
+    LIMIT 1
+  `),
 }
 
 export function upsertAccount(account) {
@@ -1102,4 +1114,12 @@ export function getRouteStateCountsByAccount() {
 
 export function getBackupJobStatusCounts() {
   return stmts.backupJobCountsByStatus.all()
+}
+
+export function getBackupRunningJobsCount() {
+  return stmts.backupRunningJobsCount.get()?.total ?? 0
+}
+
+export function getBackupLastCompletedJob() {
+  return stmts.backupLastCompletedJob.get() ?? null
 }

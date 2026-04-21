@@ -4,6 +4,7 @@ import { getAllAccounts, getRouteByBackendKey } from '../db.js'
 import { scanAccountInventory } from '../inventoryScanner.js'
 import { encodeKey } from '../metadata.js'
 import { rtdbGet } from '../firebase.js'
+import { metrics } from '../routes/metrics.js'
 import {
   createBackupJob,
   deleteJobById,
@@ -142,6 +143,12 @@ export async function processBackupJob(job, logger = console) {
 
   const abortController = new AbortController()
   activeJobs.set(job.job_id, { abortController })
+  const startedAtMs = Date.now()
+  logger?.info?.({
+    event: 'backup_job_started',
+    jobId: job.job_id,
+    destinationType: job.destination_type,
+  }, 'backup job started')
   await updateJobStatus(job.job_id, 'running', {
     startedAt: Date.now(),
     runningInstanceId: config.INSTANCE_ID,
@@ -293,7 +300,16 @@ export async function processBackupJob(job, logger = console) {
                   error: `object_too_large:${object.sizeBytes}`,
                   completed_at: Date.now(),
                 })
+                logger?.info?.({
+                  event: 'backup_object_skipped',
+                  reason: 'object_too_large',
+                  jobId: job.job_id,
+                  accountId: account.account_id,
+                  backendKey: object.backendKey,
+                }, 'backup object skipped')
               }
+              metrics.backupObjectsTotal.inc({ result: 'skipped' })
+              metrics.backupBytesTotal.inc({ result: 'skipped' }, Number(object.sizeBytes || 0))
               progress.doneObjects += 1
               progress.percentDone = progress.totalObjects > 0
                 ? Number((((progress.doneObjects + progress.failedObjects) / progress.totalObjects) * 100).toFixed(2))
@@ -352,9 +368,12 @@ export async function processBackupJob(job, logger = console) {
                 }
                 if (hasFailedDestination) {
                   progress.failedObjects += 1
+                  metrics.backupObjectsTotal.inc({ result: 'failed' })
                 } else if (hasDoneDestination) {
                   progress.doneObjects += 1
                   progress.doneBytes += Number(object.sizeBytes || 0)
+                  metrics.backupObjectsTotal.inc({ result: 'done' })
+                  metrics.backupBytesTotal.inc({ result: 'done' }, Number(object.sizeBytes || 0))
                 }
               } finally {
                 progress.percentDone = progress.totalObjects > 0
@@ -410,7 +429,9 @@ export async function processBackupJob(job, logger = console) {
       }
     }
   } catch (err) {
+    logger?.error?.({ event: 'backup_job_failed', jobId: job.job_id, err: err.message }, 'backup job failed')
     progress.failedObjects += 1
+    metrics.backupObjectsTotal.inc({ result: 'failed' })
     progress.lastError = err.message
     await updateJobProgress(job.job_id, progress)
     await updateJobStatus(job.job_id, 'failed', {
@@ -465,6 +486,17 @@ export async function processBackupJob(job, logger = console) {
       runningHeartbeatAt: null,
     })
   }
+
+  const durationSec = Math.max(0, (Date.now() - startedAtMs) / 1000)
+  metrics.backupJobDurationSeconds.observe(durationSec)
+  logger?.info?.({
+    event: 'backup_job_finished',
+    jobId: job.job_id,
+    status: getJobById(job.job_id)?.status,
+    doneObjects: progress.doneObjects,
+    failedObjects: progress.failedObjects,
+    durationSec,
+  }, 'backup job finished')
 
   touchJobHeartbeat(job.job_id, { instanceId: null, heartbeatAt: null })
 

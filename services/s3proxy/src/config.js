@@ -27,6 +27,14 @@ function optionalEnv(name, defaultValue) {
   return val.trim();
 }
 
+function optionalEnvAny(names, defaultValue) {
+  for (const name of names) {
+    const val = process.env[name]
+    if (val && val.trim() !== '') return val.trim()
+  }
+  return defaultValue
+}
+
 function optionalFloat(name, defaultValue) {
   const val = process.env[name];
   if (!val || val.trim() === "") return defaultValue;
@@ -36,6 +44,28 @@ function optionalFloat(name, defaultValue) {
     return defaultValue;
   }
   return numeric;
+}
+
+function optionalIntAny(names, defaultValue) {
+  for (const name of names) {
+    const val = process.env[name]
+    if (!val || val.trim() === '') continue
+    const numeric = Number.parseInt(val.trim(), 10)
+    if (Number.isNaN(numeric)) continue
+    return numeric
+  }
+  return defaultValue
+}
+
+function optionalBoolAny(names, defaultValue) {
+  for (const name of names) {
+    const val = process.env[name]
+    if (!val || val.trim() === '') continue
+    const normalized = val.trim().toLowerCase()
+    if (["1", "true", "yes", "on"].includes(normalized)) return true
+    if (["0", "false", "no", "off"].includes(normalized)) return false
+  }
+  return defaultValue
 }
 
 function optionalInt(name, defaultValue) {
@@ -138,11 +168,11 @@ const config = Object.freeze({
   CRON_KEEPALIVE_PREFIX: optionalEnv("CRON_KEEPALIVE_PREFIX", "_s3proxy_keepalive"),
   CRON_KEEPALIVE_CONTENT_PREFIX: optionalEnv("CRON_KEEPALIVE_CONTENT_PREFIX", "s3proxy-keepalive"),
   ADMIN_TEST_PREFIX: optionalEnv("ADMIN_TEST_PREFIX", "_s3proxy_probe"),
-  BACKUP_ENABLED: optionalBool("BACKUP_ENABLED", false),
-  BACKUP_RTDB_URL: optionalEnv("BACKUP_RTDB_URL", ""),
-  BACKUP_CONCURRENCY: optionalInt("BACKUP_CONCURRENCY", 3),
-  BACKUP_CHUNK_STREAM_MS: optionalInt("BACKUP_CHUNK_STREAM_MS", 50),
-  BACKUP_MAX_OBJECT_SIZE_MB: optionalInt("BACKUP_MAX_OBJECT_SIZE_MB", 512),
+  BACKUP_ENABLED: optionalBoolAny(["BACKUP_ENABLED", "S3PROXY_BACKUP_ENABLED"], false),
+  BACKUP_RTDB_URL: optionalEnvAny(["BACKUP_RTDB_URL", "S3PROXY_BACKUP_RTDB_URL"], ""),
+  BACKUP_CONCURRENCY: optionalIntAny(["BACKUP_CONCURRENCY", "S3PROXY_BACKUP_CONCURRENCY"], 3),
+  BACKUP_CHUNK_STREAM_MS: optionalIntAny(["BACKUP_CHUNK_STREAM_MS", "S3PROXY_BACKUP_CHUNK_STREAM_MS"], 50),
+  BACKUP_MAX_OBJECT_SIZE_MB: optionalIntAny(["BACKUP_MAX_OBJECT_SIZE_MB", "S3PROXY_BACKUP_MAX_OBJECT_SIZE_MB"], 512),
 });
 
 export default config;

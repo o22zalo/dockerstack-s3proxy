@@ -145,6 +145,29 @@ export const metrics = {
     labelNames: ['status'],
     registers: [register],
   }),
+  backupObjectsTotal: new Counter({
+    name: 's3proxy_backup_objects_total',
+    help: 'Backup objects processed by result',
+    labelNames: ['result'],
+    registers: [register],
+  }),
+  backupBytesTotal: new Counter({
+    name: 's3proxy_backup_bytes_total',
+    help: 'Total bytes copied by backup jobs',
+    labelNames: ['result'],
+    registers: [register],
+  }),
+  backupRetriesTotal: new Counter({
+    name: 's3proxy_backup_retries_total',
+    help: 'Backup retry attempts',
+    registers: [register],
+  }),
+  backupJobDurationSeconds: new Histogram({
+    name: 's3proxy_backup_job_duration_seconds',
+    help: 'Backup job total duration',
+    buckets: [1, 5, 10, 30, 60, 120, 300, 600, 1800],
+    registers: [register],
+  }),
 }
 
 export function refreshMetadataMetrics() {
