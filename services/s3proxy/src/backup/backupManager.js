@@ -9,6 +9,8 @@ import {
   deleteJobById,
   claimNextPendingJob,
   getJobById,
+  getPendingLedgerEntries,
+  getRunningJob,
   listLedgerEntries,
   listJobs,
   updateJobProgress,
@@ -23,6 +25,13 @@ let managerInterval = null
 
 export function initBackupManager(logger = console, intervalMs = 2000) {
   if (managerInterval) return { started: false }
+  const staleRunning = getRunningJob()
+  if (staleRunning) {
+    updateJobStatus(staleRunning.job_id, 'pending', {
+      completedAt: null,
+      lastError: 'auto_resumed_after_restart',
+    }).catch(() => {})
+  }
   managerInterval = setInterval(() => {
     runPendingBackupJobs(logger).catch((err) => {
       logger?.error?.({ err: err.message }, 'backup manager tick failed')
@@ -117,7 +126,8 @@ export function listBackupJobLedger(jobId, options = {}) {
 }
 
 export function removeBackupJob(jobId) {
-  if (activeJobs.has(jobId)) {
+  const persisted = getJobById(jobId)
+  if (activeJobs.has(jobId) || persisted?.status === 'running') {
     throw new Error('job_is_running')
   }
   deleteJobById(jobId)
@@ -176,8 +186,58 @@ export async function processBackupJob(job, logger = console) {
     if (latest.status === 'paused' || latest.status === 'cancelled') return true
     return false
   }
+  const statusPollTimer = setInterval(() => {
+    shouldStopFromDb()
+      .then((shouldStop) => {
+        if (shouldStop) abortController.abort('db_status_stop')
+      })
+      .catch(() => {})
+  }, 1000)
+  statusPollTimer.unref?.()
 
   try {
+    const ledgerSeed = (job.status === 'paused' || job.status === 'failed')
+      ? getPendingLedgerEntries(job.job_id, { limit: 2000, afterId: 0 })
+      : []
+    const ledgerProcessedKeys = new Set()
+    for (const entry of ledgerSeed) {
+      if (abortController.signal.aborted) break
+      const account = targetAccounts.find((item) => item.account_id === entry.account_id)
+      if (!account) continue
+      ledgerProcessedKeys.add(`${entry.account_id}::${entry.backend_key}`)
+      progress.totalObjects += 1
+      progress.totalBytes += Number(entry.src_size_bytes || 0)
+      progress.currentAccountId = account.account_id
+      progress.currentKey = entry.backend_key
+
+      let hasFailedDestination = false
+      let hasDoneDestination = false
+      for (const destination of destinations) {
+        const result = await copyObjectToDestination({
+          account,
+          backendKey: entry.backend_key,
+          encodedKey: entry.encoded_key,
+          jobId: job.job_id,
+          destination: destination.adapter,
+          destinationType: destination.type,
+          options: job.options,
+          signal: abortController.signal,
+          logger,
+        })
+        if (result.status === 'failed') hasFailedDestination = true
+        if (result.status === 'done' || result.status === 'skipped') hasDoneDestination = true
+      }
+      if (hasFailedDestination) progress.failedObjects += 1
+      else if (hasDoneDestination) {
+        progress.doneObjects += 1
+        progress.doneBytes += Number(entry.src_size_bytes || 0)
+      }
+      progress.percentDone = progress.totalObjects > 0
+        ? Number((((progress.doneObjects + progress.failedObjects) / progress.totalObjects) * 100).toFixed(2))
+        : 0
+      await updateJobProgress(job.job_id, progress)
+    }
+
     for (const account of targetAccounts) {
       if (abortController.signal.aborted) break
       if (resumeToken.accountId && resumeToken.accountId !== account.account_id) {
@@ -192,6 +252,12 @@ export async function processBackupJob(job, logger = console) {
             if (await shouldStopFromDb()) {
               abortController.abort('db_status_stop')
               break
+            }
+            if (ledgerProcessedKeys.has(`${account.account_id}::${object.backendKey}`)) {
+              continue
+            }
+            if (resumeToken.lastKey && !resumeToken.continuationToken && resumeToken.accountId === account.account_id) {
+              if (object.backendKey <= resumeToken.lastKey) continue
             }
             if ((Number(object.sizeBytes) || 0) > maxObjectSizeBytes) {
               continue
@@ -311,6 +377,8 @@ export async function processBackupJob(job, logger = console) {
     await updateJobStatus(job.job_id, 'failed', { completedAt: Date.now(), lastError: err.message })
     activeJobs.delete(job.job_id)
     return getJobById(job.job_id)
+  } finally {
+    clearInterval(statusPollTimer)
   }
 
   await updateJobProgress(job.job_id, progress)
@@ -335,6 +403,9 @@ export async function processBackupJob(job, logger = console) {
 }
 
 export async function runPendingBackupJobs(logger = console) {
+  if (activeJobs.size > 0) return null
+  const running = getRunningJob()
+  if (running && !activeJobs.has(running.job_id)) return null
   const pendingJob = claimNextPendingJob()
   if (!pendingJob) return null
   return processBackupJob(pendingJob, logger)

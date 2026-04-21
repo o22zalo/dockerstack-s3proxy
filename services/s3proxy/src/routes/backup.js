@@ -183,8 +183,11 @@ export default async function backupRoutes(fastify) {
     return { ok: true, result }
   })
 
-  fastify.get('/admin/backup/backends/:accountId/diagnose', async (request) => {
+  fastify.get('/admin/backup/backends/:accountId/diagnose', async (request, reply) => {
     const result = await diagnoseBackend(request.params.accountId)
+    if (result?.error === 'not_implemented') {
+      return reply.code(501).send({ ok: false, error: 'NOT_IMPLEMENTED', result })
+    }
     return { ok: true, result }
   })
 }

@@ -1,4 +1,4 @@
-import { createReadStream, createWriteStream, existsSync, mkdirSync, rmSync, statSync } from 'fs'
+import { createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, rmSync, statSync } from 'fs'
 import { dirname, join } from 'path'
 import { pipeline } from 'stream/promises'
 
@@ -29,7 +29,25 @@ export class LocalDestination {
   }
 
   async * listKeys(_prefix = '') {
-    // MVP: local destination currently does not recursively enumerate.
+    const baseDir = join(this.rootDir, this.prefix)
+    const walk = (dir, relativeRoot = '') => {
+      const entries = readdirSync(dir, { withFileTypes: true })
+      const results = []
+      for (const entry of entries) {
+        const relative = relativeRoot ? `${relativeRoot}/${entry.name}` : entry.name
+        const fullPath = join(dir, entry.name)
+        if (entry.isDirectory()) {
+          results.push(...walk(fullPath, relative))
+        } else {
+          results.push(relative)
+        }
+      }
+      return results
+    }
+    if (!existsSync(baseDir)) return
+    for (const key of walk(baseDir)) {
+      yield { key, etag: '', size: statSync(join(baseDir, key)).size }
+    }
   }
 
   async delete(key) {
