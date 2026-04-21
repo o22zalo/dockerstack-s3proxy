@@ -7,6 +7,7 @@ import {
   commitUploadedObjectMetadata,
   db,
 } from '../db.js'
+import { reloadAccountsFromSQLite } from '../accountPool.js'
 import {
   S3Client,
   HeadBucketCommand,
@@ -119,6 +120,7 @@ export async function replaceBackendConfig(sourceAccountId, newAccountConfig, { 
     ...newAccountConfig,
     account_id: sourceAccountId,
   })
+  reloadAccountsFromSQLite()
 
   stmts.updateMigration.run({
     migration_id: migrationId,
@@ -322,6 +324,7 @@ export async function rollbackMigration(migrationId) {
 
     if (rollbackSnapshot) {
       upsertAccount(rollbackSnapshot)
+      reloadAccountsFromSQLite()
       stmts.updateMigration.run({
         migration_id: migrationId,
         status: 'rolled_back',

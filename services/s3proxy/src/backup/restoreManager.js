@@ -1,11 +1,16 @@
-import { randomUUID } from 'crypto'
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3'
 import {
   commitUploadedObjectMetadata,
   getAllAccounts,
   getAccountById,
 } from '../db.js'
-import { listLedgerEntries, getJobById } from './backupJournal.js'
+import {
+  listLedgerEntries,
+  getJobById,
+  createBackupJob,
+  updateJobStatus,
+  updateJobProgress,
+} from './backupJournal.js'
 import { createDestination } from './destinations/index.js'
 import { syncRouteToRtdb } from '../controlPlane.js'
 
@@ -17,13 +22,22 @@ export async function startRestoreJob({
   options = {},
   logger = console,
 }) {
-  const restoreId = `restore_${randomUUID()}`
   const { dryRun = false } = options
 
   const sourceJob = getJobById(sourceJobId)
   if (!sourceJob) throw new Error(`source job not found: ${sourceJobId}`)
 
+  const jobRecord = await createBackupJob({
+    type: 'restore',
+    destinationType: sourceDestinationType || 'local',
+    destinationConfig: sourceDestinationConfig,
+    accountFilter: Object.values(targetAccountMapping),
+    options: { ...options, sourceJobId, targetAccountMapping },
+  })
+  const restoreId = jobRecord.job_id
+
   logger.info?.({ restoreId, sourceJobId, dryRun }, 'restore job started')
+  await updateJobStatus(restoreId, 'running', { startedAt: Date.now() })
 
   const ledgerEntries = []
   let offset = 0
@@ -37,6 +51,10 @@ export async function startRestoreJob({
   }
 
   if (ledgerEntries.length === 0) {
+    await updateJobStatus(restoreId, 'completed', {
+      completedAt: Date.now(),
+      lastError: null,
+    })
     return {
       restoreId,
       sourceJobId,
@@ -75,95 +93,126 @@ export async function startRestoreJob({
     return client
   }
 
-  for (const entry of ledgerEntries) {
-    const targetAccountId = targetAccountMapping[entry.account_id] ?? entry.account_id
-    const targetAccount = accountById[targetAccountId] ?? getAccountById(targetAccountId)
+  try {
+    for (const entry of ledgerEntries) {
+      const targetAccountId = targetAccountMapping[entry.account_id] ?? entry.account_id
+      const targetAccount = accountById[targetAccountId] ?? getAccountById(targetAccountId)
 
-    if (!targetAccount) {
-      const err = `target account not found: ${targetAccountId} (mapped from ${entry.account_id})`
-      logger.warn?.({ entry, err }, 'restore: skipping entry')
-      errors.push({ backendKey: entry.backend_key, error: err })
-      failed += 1
-      continue
-    }
+      if (!targetAccount) {
+        const err = `target account not found: ${targetAccountId} (mapped from ${entry.account_id})`
+        logger.warn?.({ entry, err }, 'restore: skipping entry')
+        errors.push({ backendKey: entry.backend_key, error: err })
+        failed += 1
+      } else {
+        try {
+          if (dryRun) {
+            logger.info?.({ key: entry.dst_key, targetAccountId }, 'restore: dry-run skip')
+            restored += 1
+          } else {
+            const readStream = await sourceDest.read(entry.dst_key, { dstLocation: entry.dst_location })
+            const contentType = entry.content_type || 'application/octet-stream'
+            const sizeBytes = Number(entry.src_size_bytes || 0)
+            const client = getOrCreateClient(targetAccount)
 
-    try {
-      if (dryRun) {
-        logger.info?.({ key: entry.dst_key, targetAccountId }, 'restore: dry-run skip')
-        restored += 1
-        continue
-      }
+            await client.send(new PutObjectCommand({
+              Bucket: targetAccount.bucket,
+              Key: entry.backend_key,
+              Body: readStream,
+              ContentType: contentType,
+              ContentLength: sizeBytes > 0 ? sizeBytes : undefined,
+            }))
 
-      const readStream = await sourceDest.read(entry.dst_key, { dstLocation: entry.dst_location })
-      const contentType = entry.content_type || 'application/octet-stream'
-      const sizeBytes = Number(entry.src_size_bytes || 0)
-      const client = getOrCreateClient(targetAccount)
+            const committed = commitUploadedObjectMetadata({
+              encoded_key: entry.encoded_key,
+              account_id: targetAccountId,
+              bucket: entry.backend_bucket || targetAccount.bucket,
+              object_key: entry.backend_key,
+              backend_key: entry.backend_key,
+              size_bytes: sizeBytes,
+              content_type: contentType,
+              etag: entry.src_etag || '',
+            })
 
-      await client.send(new PutObjectCommand({
-        Bucket: targetAccount.bucket,
-        Key: entry.backend_key,
-        Body: readStream,
-        ContentType: contentType,
-        ContentLength: sizeBytes > 0 ? sizeBytes : undefined,
-      }))
+            try {
+              if (committed?.route) {
+                await syncRouteToRtdb(committed.route)
+              }
+            } catch (rtdbErr) {
+              rtdbSyncFailures += 1
+              logger.warn?.({
+                restoreId,
+                key: entry.backend_key,
+                err: rtdbErr.message,
+              }, 'restore: RTDB sync failed (non-fatal)')
+            }
 
-      const committed = commitUploadedObjectMetadata({
-        encoded_key: entry.encoded_key,
-        account_id: targetAccountId,
-        bucket: entry.backend_bucket || targetAccount.bucket,
-        object_key: entry.backend_key,
-        backend_key: entry.backend_key,
-        size_bytes: sizeBytes,
-        content_type: contentType,
-        etag: entry.src_etag || '',
-      })
-
-      try {
-        if (committed?.route) {
-          await syncRouteToRtdb(committed.route)
+            restored += 1
+            logger.info?.({ restoreId, key: entry.backend_key, targetAccountId, sizeBytes }, 'restore: object restored')
+          }
+        } catch (err) {
+          failed += 1
+          errors.push({ backendKey: entry.backend_key, error: err.message })
+          logger.error?.({ restoreId, key: entry.backend_key, err: err.message }, 'restore: object failed')
         }
-      } catch (rtdbErr) {
-        rtdbSyncFailures += 1
-        logger.warn?.({
-          restoreId,
-          key: entry.backend_key,
-          err: rtdbErr.message,
-        }, 'restore: RTDB sync failed (non-fatal)')
       }
 
-      restored += 1
-      logger.info?.({ restoreId, key: entry.backend_key, targetAccountId, sizeBytes }, 'restore: object restored')
-    } catch (err) {
-      failed += 1
-      errors.push({ backendKey: entry.backend_key, error: err.message })
-      logger.error?.({ restoreId, key: entry.backend_key, err: err.message }, 'restore: object failed')
+      if ((restored + failed) % 50 === 0) {
+        await updateJobProgress(restoreId, {
+          totalObjects: ledgerEntries.length,
+          doneObjects: restored,
+          failedObjects: failed,
+          totalBytes: 0,
+          doneBytes: 0,
+        }).catch(() => {})
+      }
     }
-  }
 
-
-  if (options.rebuildRtdb && restored > 0) {
-    try {
-      logger.info?.({ restoreId, count: restored }, 'restore: rebuild RTDB requested; per-object sync already completed')
-    } catch (err) {
-      logger.warn?.({ restoreId, err: err.message }, 'restore: batch RTDB sync failed (non-fatal)')
+    if (options.rebuildRtdb && restored > 0) {
+      try {
+        logger.info?.({ restoreId, count: restored }, 'restore: rebuild RTDB requested; per-object sync already completed')
+      } catch (err) {
+        logger.warn?.({ restoreId, err: err.message }, 'restore: batch RTDB sync failed (non-fatal)')
+      }
     }
-  }
 
-  const result = {
-    restoreId,
-    sourceJobId,
-    status: failed > 0 ? 'completed_with_errors' : 'completed',
-    totalObjects: ledgerEntries.length,
-    restoredObjects: restored,
-    failedObjects: failed,
-    rtdbSynced: restored - rtdbSyncFailures,
-    rtdbSyncFailures,
-    dryRun,
-    errors: errors.slice(0, 50),
-  }
+    const finalStatus = failed > 0 ? 'failed' : 'completed'
 
-  logger.info?.(result, 'restore job finished')
-  return result
+    await updateJobProgress(restoreId, {
+      totalObjects: ledgerEntries.length,
+      doneObjects: restored,
+      failedObjects: failed,
+      totalBytes: 0,
+      doneBytes: 0,
+    }).catch(() => {})
+
+    await updateJobStatus(restoreId, finalStatus, {
+      completedAt: Date.now(),
+      lastError: failed > 0 ? `${failed} objects failed` : null,
+    })
+
+    const result = {
+      restoreId,
+      sourceJobId,
+      status: failed > 0 ? 'completed_with_errors' : 'completed',
+      totalObjects: ledgerEntries.length,
+      restoredObjects: restored,
+      failedObjects: failed,
+      rtdbSynced: restored - rtdbSyncFailures,
+      rtdbSyncFailures,
+      dryRun,
+      errors: errors.slice(0, 50),
+    }
+
+    logger.info?.(result, 'restore job finished')
+    return result
+  } catch (err) {
+    logger.error?.({ restoreId, err: err.message }, 'restore job crashed')
+    await updateJobStatus(restoreId, 'failed', {
+      completedAt: Date.now(),
+      lastError: err.message,
+    }).catch(() => {})
+    throw err
+  }
 }
 
 export async function verifyRestoreIntegrity(jobId, sourceDestination) {
