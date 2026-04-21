@@ -28,6 +28,7 @@ import { copyObjectToDestination } from './backupWorker.js'
 
 const activeJobs = new Map()
 let managerInterval = null
+const STALE_JOB_THRESHOLD_MS = config.BACKUP_STALE_JOB_THRESHOLD_MS || 30_000
 
 export function initBackupManager(logger = console, intervalMs = 2000) {
   if (managerInterval) return { started: false }
@@ -541,9 +542,48 @@ export async function processBackupJob(job, logger = console) {
 
 export async function runPendingBackupJobs(logger = console) {
   if (activeJobs.size > 0) return null
+
   const running = getRunningJob()
-  if (running && !activeJobs.has(running.job_id)) return null
+  if (running) {
+    if (activeJobs.has(running.job_id)) {
+      return null
+    }
+
+    const heartbeatAge = Date.now() - Number(running.running_heartbeat_at || 0)
+    if (heartbeatAge < STALE_JOB_THRESHOLD_MS) {
+      logger?.debug?.({
+        event: 'backup_waiting_for_running_job',
+        jobId: running.job_id,
+        heartbeatAgeMs: heartbeatAge,
+      }, 'job running in another instance, waiting')
+      return null
+    }
+
+    logger?.warn?.({
+      event: 'backup_stale_job_recovery',
+      jobId: running.job_id,
+      heartbeatAgeMs: heartbeatAge,
+      runningInstanceId: running.running_instance_id,
+    }, 'stale running job detected, resetting to pending')
+
+    await updateJobStatus(running.job_id, 'pending', {
+      completedAt: null,
+      lastError: `auto_recovered_stale_heartbeat_${Date.now()}`,
+      runningInstanceId: null,
+      runningHeartbeatAt: null,
+    })
+  }
+
   const pendingJob = claimNextPendingJob()
   if (!pendingJob) return null
-  return processBackupJob(pendingJob, logger)
+
+  processBackupJob(pendingJob, logger).catch((err) => {
+    logger?.error?.({
+      event: 'backup_job_unhandled_error',
+      jobId: pendingJob.job_id,
+      err: err.message,
+    }, 'unhandled backup job error')
+  })
+
+  return pendingJob.job_id
 }

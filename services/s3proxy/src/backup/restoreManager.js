@@ -7,6 +7,7 @@ import {
 } from '../db.js'
 import { listLedgerEntries, getJobById } from './backupJournal.js'
 import { createDestination } from './destinations/index.js'
+import { syncRouteToRtdb } from '../controlPlane.js'
 
 export async function startRestoreJob({
   sourceJobId,
@@ -43,6 +44,8 @@ export async function startRestoreJob({
       totalObjects: 0,
       restoredObjects: 0,
       failedObjects: 0,
+      rtdbSynced: 0,
+      rtdbSyncFailures: 0,
       dryRun,
       message: 'No completed objects found in source job ledger',
     }
@@ -54,6 +57,7 @@ export async function startRestoreJob({
 
   let restored = 0
   let failed = 0
+  let rtdbSyncFailures = 0
   const errors = []
   const clientCache = new Map()
   const getOrCreateClient = (account) => {
@@ -103,7 +107,7 @@ export async function startRestoreJob({
         ContentLength: sizeBytes > 0 ? sizeBytes : undefined,
       }))
 
-      commitUploadedObjectMetadata({
+      const committed = commitUploadedObjectMetadata({
         encoded_key: entry.encoded_key,
         account_id: targetAccountId,
         bucket: entry.backend_bucket || targetAccount.bucket,
@@ -114,12 +118,34 @@ export async function startRestoreJob({
         etag: entry.src_etag || '',
       })
 
+      try {
+        if (committed?.route) {
+          await syncRouteToRtdb(committed.route)
+        }
+      } catch (rtdbErr) {
+        rtdbSyncFailures += 1
+        logger.warn?.({
+          restoreId,
+          key: entry.backend_key,
+          err: rtdbErr.message,
+        }, 'restore: RTDB sync failed (non-fatal)')
+      }
+
       restored += 1
       logger.info?.({ restoreId, key: entry.backend_key, targetAccountId, sizeBytes }, 'restore: object restored')
     } catch (err) {
       failed += 1
       errors.push({ backendKey: entry.backend_key, error: err.message })
       logger.error?.({ restoreId, key: entry.backend_key, err: err.message }, 'restore: object failed')
+    }
+  }
+
+
+  if (options.rebuildRtdb && restored > 0) {
+    try {
+      logger.info?.({ restoreId, count: restored }, 'restore: rebuild RTDB requested; per-object sync already completed')
+    } catch (err) {
+      logger.warn?.({ restoreId, err: err.message }, 'restore: batch RTDB sync failed (non-fatal)')
     }
   }
 
@@ -130,6 +156,8 @@ export async function startRestoreJob({
     totalObjects: ledgerEntries.length,
     restoredObjects: restored,
     failedObjects: failed,
+    rtdbSynced: restored - rtdbSyncFailures,
+    rtdbSyncFailures,
     dryRun,
     errors: errors.slice(0, 50),
   }
